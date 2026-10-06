@@ -29,7 +29,7 @@ read_bed <- function(path, lengths) {
 # come from YOUR BAM header, rather than a hard-coded human or mouse genome.
 select_reference <- function(fragments, cells, lengths, blacklist, bin_size, quantile_cutoff) {
   chroms <- grep("^chr([1-9]|1[0-9])$", names(lengths), value = TRUE)
-  if (!length(chroms)) fail("No mouse chr1-chr19 contigs; provide --reference-bed instead")
+  if (!length(chroms)) fail("Reference selection requires mouse chr1-chr19 contigs in the BAM header")
   bins <- do.call(c, lapply(chroms, function(chrom) {
     starts <- seq_len(floor(lengths[[chrom]] / bin_size)) * bin_size - bin_size + 1
     GenomicRanges::GRanges(chrom, IRanges::IRanges(starts, width = bin_size))
