@@ -12,6 +12,8 @@ stopifnot(count_read_bases("5M2I5M", 1L, "AAAAAAAAAAAA", "IIIIIIIIIIII", interva
 stopifnot(count_read_bases("2S10M", 1L, "AAAAAAAAAAAA", "IIIIIIIIIIII", intervals, 20) == 6)
 stopifnot(count_read_bases("3M", 1L, "ANA", "I!I", intervals, 20) == 2)
 stopifnot(count_read_bases("3M", 1L, "AAA", "!!!", intervals, 20) == 0)
+stopifnot(count_read_bases("3M", 1L, "AAA", NA_character_, intervals, 20) == 0,
+          count_read_bases("3M", 1L, "*", "*", intervals, 20) == 0)
 
 # A tiny coordinate-sorted BAM exercises real BAM reading, CB translation,
 # exclusion of duplicates/secondary alignments, quality filtering, and a read
@@ -74,6 +76,29 @@ run_tests <- function() {
     GenomicRanges::GRanges("chr1", IRanges::IRanges(501, 1000)), 500, 0.5)
   stopifnot(length(selected) == 1, IRanges::start(selected) == 1,
             IRanges::end(selected) == 500)
+  # Full automatic-reference route with ATAC aliases in fragments as well as
+  # BAM and mgatk. Before the fix, canonical CELL1 never matched these fragments.
+  con <- gzfile(fragments, "wt")
+  writeLines(c("chr1\t0\t10\tATAC1\t100", "chr1\t0\t11\tATAC1\t1",
+               "chr1\t500\t510\tATAC1\t1"), con)
+  close(con)
+  blacklist <- file.path(root, "blacklist.bed")
+  writeLines("chr1\t500\t1000", blacklist)
+  selected_args <- args[-c(match("--reference-bed", args), match("--reference-bed", args) + 1L)]
+  selected_args <- c(selected_args, "--fragments", fragments, "--blacklist", blacklist,
+                     "--quantile", "0.5")
+  automatic <- main(selected_args)
+  stopifnot(automatic$nuclear_reference_bp[1] == 500,
+            automatic$nuclear_aligned_bases[1] == 10,
+            automatic$nuclear_mean_depth[1] == 0.02,
+            automatic$mtDNA_copy_estimate[1] == 10000)
+  expect_error <- function(expr) {
+    stopifnot(inherits(tryCatch(force(expr), error = identity), "error"))
+  }
+  writeLines(c("barcode,atac_barcode", "CELL1,ATAC1", "CELL1,ATAC4"), map)
+  expect_error(main(args))
+  writeLines(c("barcode,atac_barcode", "CELL1,"), map)
+  expect_error(main(args))
 }
 run_tests()
 cat("All mtDNA copy-number tests passed.\n")

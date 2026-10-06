@@ -70,4 +70,3 @@ if (settings$integrate_atac) {
     settings$ATAC_dims, "atac_integrated", settings)
   saveRDS(obj, "atac_integrated.rds")
 }
-saveRDS(obj, "atac_stage.rds")

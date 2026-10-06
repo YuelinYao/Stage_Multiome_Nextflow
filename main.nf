@@ -26,6 +26,7 @@ if (!(params.phase in ['review', 'cluster_review', 'analysis'])) error '--phase 
 if (!(params.stage.toString() ==~ /[A-Za-z0-9][A-Za-z0-9_.-]*/)) error 'Stage must be a safe directory name'
 // Read only peak settings here: a review JSON can still have unset QC bounds.
 def peakSettings = [:]
+def pipelineSettings = [:]
 if (params.json) {
   if (!file(params.json).exists()) error "Pipeline JSON not found: ${params.json}"
   def settings = new groovy.json.JsonSlurper().parse(file(params.json).toFile())
@@ -33,6 +34,7 @@ if (params.json) {
   def unknownSettings = settings.keySet() - ['peaks', 'note', 'thresholds', 'sample_overrides',
     'review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'clustering']
   if (unknownSettings) error "Unknown pipeline JSON sections: ${unknownSettings.join(', ')}"
+  pipelineSettings = settings
   if (settings.peaks != null) {
     if (!(settings.peaks instanceof Map) ||
         !settings.peaks.keySet().every { it in ['peak_min', 'peak_max'] })
@@ -64,7 +66,7 @@ process PEAK_SAMPLE {
   memory '24 GB'
   publishDir "${params.outdir}/${params.stage}/peaks/sample", mode: 'copy'
   input:
-  tuple val(id), val(arc), val(mgatk)
+  tuple val(id), val(arc), val(mgatk_enriched)
   output:
   tuple val(id), path("${id}.bed")
   script:
@@ -95,7 +97,7 @@ process QC_METRICS {
   memory '48 GB'
   publishDir "${params.outdir}/${params.stage}/qc/review", mode: 'copy'
   input:
-  tuple val(id), val(arc), val(mgatk), path(peaks)
+  tuple val(id), val(arc), val(mgatk_enriched), path(peaks)
   output:
   tuple val(id), path("${id}.metrics.tsv"), path("${id}.distributions.pdf")
   script:
@@ -129,7 +131,7 @@ process PRE_DOUBLET_REVIEW {
   memory '48 GB'
   publishDir "${params.outdir}/${params.stage}/qc/cluster_review", mode: 'copy'
   input:
-  tuple val(id), val(arc), val(mgatk), path(peaks), path(json)
+  tuple val(id), val(arc), val(mgatk_enriched), path(peaks), path(json)
   output:
   path "${id}.cluster_cells.tsv"
   path "${id}.cluster_summary.tsv"
@@ -148,9 +150,9 @@ process QC_FILTER_DOUBLET {
   memory '48 GB'
   publishDir "${params.outdir}/${params.stage}/qc/filtered", mode: 'copy', pattern: '*.{qc.tsv,pdf}'
   input:
-  tuple val(id), val(arc), val(mgatk), path(peaks), path(json), path(review)
+  tuple val(id), val(arc), val(mgatk_enriched), path(peaks), path(json), path(review)
   output:
-  tuple val(id), val(mgatk), path("${id}.rna.qc.rds"), path("${id}.atac.qc.rds"), path("${id}.qc.tsv"), path("${id}_Doublet.pdf")
+  tuple val(id), val(mgatk_enriched), path("${id}.rna.qc.rds"), path("${id}.atac.qc.rds"), path("${id}.qc.tsv"), path("${id}_Doublet.pdf")
   script:
   """
   # R source checksum: ${scriptsHash}
@@ -166,7 +168,6 @@ process MERGE_INTEGRATE_RNA {
   path objects
   path json
   output:
-  path 'rna_stage.rds', emit: stage
   path 'rna_cell_annotations.tsv', emit: annotations
   path 'rna_unintegrated.rds', emit: unintegrated
   path 'rna_integrated.rds', optional: true, emit: integrated
@@ -185,7 +186,6 @@ process MERGE_INTEGRATE_ATAC {
   path objects
   path json
   output:
-  path 'atac_stage.rds', emit: stage
   path 'atac_unintegrated.rds', emit: unintegrated
   path 'atac_integrated.rds', optional: true, emit: integrated
   script:
@@ -201,13 +201,13 @@ process MGATK_METRICS {
   memory '24 GB'
   publishDir "${params.outdir}/${params.stage}/mgatk", mode: 'copy'
   input:
-  tuple val(id), val(mgatk), path(qc)
+  tuple val(id), val(mgatk_enriched), path(qc)
   output:
   path "${id}.mtDNA.tsv"
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/06c_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(mgatk)} '${id}.mtDNA.tsv'
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/06c_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(mgatk_enriched)} '${id}.mtDNA.tsv'
   """
 }
 
@@ -262,32 +262,40 @@ process DEG_STAGE {
 
 workflow {
   seenIds = new HashSet()
-  rows = Channel.fromPath(params.samples, checkIfExists: true)
+  // Keep both mgatk sources available for future branches. Active processes
+  // below receive only the enriched source through the rows projection.
+  sample_records = Channel.fromPath(params.samples, checkIfExists: true)
     .splitCsv(header: true)
     .map { row ->
-      if (row.keySet() != ['stage', 'sample_id', 'arc_out', 'mgatk_dir'].toSet())
-        error 'Sample CSV must contain exactly stage,sample_id,arc_out,mgatk_dir columns'
+      if (row.keySet() != ['stage', 'sample_id', 'arc_out', 'mgatk_enriched_dir', 'mgatk_dir'].toSet())
+        error 'Sample CSV must contain exactly stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir columns'
       row
     }
     .filter { it.stage?.trim() == params.stage }
     .ifEmpty { error "No rows for stage ${params.stage} in ${params.samples}" }
     .map { row ->
-      for (key in ['sample_id','arc_out','mgatk_dir'])
+      for (key in ['sample_id','arc_out','mgatk_enriched_dir'])
         if (!row[key]?.trim()) error "Missing ${key} in manifest row: ${row}"
       def id = row.sample_id.trim()
       if (!(id ==~ /[A-Za-z0-9][A-Za-z0-9_.-]*/))
         error "Invalid sample_id ${id}: start with a letter or number and use only letters, numbers, _, . or -"
       if (!seenIds.add(id)) error "Duplicate sample_id for stage ${params.stage}: ${id}"
       def arc = file(row.arc_out.trim()).toAbsolutePath().toString()
-      def mt = file(row.mgatk_dir.trim()).toAbsolutePath().toString()
+      def enriched = file(row.mgatk_enriched_dir.trim()).toAbsolutePath().toString()
+      // The reserved source is not used yet and may be left blank. Resolve
+      // supplied paths but defer directory checks until an analysis uses them.
+      def original = row.mgatk_dir?.trim() ? file(row.mgatk_dir.trim()).toAbsolutePath().toString() : ''
       if (!file("${arc}/filtered_feature_bc_matrix.h5").exists() || !file("${arc}/atac_fragments.tsv.gz").exists())
         error "Missing ARC H5 or fragments: ${arc}"
       if (!file("${arc}/atac_fragments.tsv.gz.tbi").exists()) error "Missing fragment index: ${arc}"
-      if (!java.nio.file.Files.isDirectory(file(mt))) error "Missing mgatk directory: ${mt}"
-      tuple(id, arc, mt)
+      if (!java.nio.file.Files.isDirectory(file(enriched)))
+        error "Missing mgatk_enriched_dir directory: ${enriched}"
+      tuple(id, arc, enriched, original)
     }
     .toSortedList { a, b -> a[0] <=> b[0] }
     .flatMap { it }
+
+  rows = sample_records.map { id, arc, enriched, original -> tuple(id, arc, enriched) }
 
   PEAK_SAMPLE(rows)
   COMMON_PEAKS(PEAK_SAMPLE.out.map { id, bed -> bed }.collect())
@@ -302,16 +310,21 @@ workflow {
   if (params.phase == 'analysis') {
     json = Channel.value(file(params.json))
     reviewDir = params.cluster_review_dir ?: "${params.outdir}/${params.stage}/qc/cluster_review"
-    reviewed = rows.combine(COMMON_PEAKS.out).combine(json).map { id, arc, mt, peaks, cfg ->
+    reviewed = rows.combine(COMMON_PEAKS.out).combine(json).map { id, arc, enriched, peaks, cfg ->
       def reviewFile = file("${reviewDir}/${id}.cluster_cells.tsv", checkIfExists: true)
-      tuple(id, arc, mt, peaks, cfg, reviewFile)
+      tuple(id, arc, enriched, peaks, cfg, reviewFile)
     }
     QC_FILTER_DOUBLET(reviewed)
     filtered = QC_FILTER_DOUBLET.out
-    MERGE_INTEGRATE_RNA(filtered.map { id, mt, rna, atac, report, plot -> rna }.collect(), json)
-    MERGE_INTEGRATE_ATAC(filtered.map { id, mt, rna, atac, report, plot -> atac }.collect(), json)
-    MGATK_METRICS(filtered.map { id, mt, rna, atac, report, plot -> tuple(id, mt, rna) })
-    WNN_STAGE(MERGE_INTEGRATE_RNA.out.stage, MERGE_INTEGRATE_ATAC.out.stage, json)
+    MERGE_INTEGRATE_RNA(filtered.map { id, enriched, rna, atac, report, plot -> rna }.collect(), json)
+    MERGE_INTEGRATE_ATAC(filtered.map { id, enriched, rna, atac, report, plot -> atac }.collect(), json)
+    MGATK_METRICS(filtered.map { id, enriched, rna, atac, report, plot -> tuple(id, enriched, rna) })
+    // Use the saved analysis object directly; omitted switches default to true.
+    rna_for_wnn = pipelineSettings.RNA_processing?.integrate_rna == false ?
+      MERGE_INTEGRATE_RNA.out.unintegrated : MERGE_INTEGRATE_RNA.out.integrated
+    atac_for_wnn = pipelineSettings.ATAC_processing?.integrate_atac == false ?
+      MERGE_INTEGRATE_ATAC.out.unintegrated : MERGE_INTEGRATE_ATAC.out.integrated
+    WNN_STAGE(rna_for_wnn, atac_for_wnn, json)
     ADD_MGATK(WNN_STAGE.out, MGATK_METRICS.out.collect())
     DEG_STAGE(ADD_MGATK.out[0])
   }

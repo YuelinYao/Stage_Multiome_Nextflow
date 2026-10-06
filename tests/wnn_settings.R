@@ -33,7 +33,9 @@ run_checks <- function() {
                          algorithm = 1, resolution = 0.2))
   env$read_pipeline_config <- function(...) cfg
   env$FindMultiModalNeighbors <- function(object, reduction.list, dims.list, ...) {
-    stopifnot(identical(reduction.list, list('integrated.cca', 'lsi')),
+    expected <- list(if (cfg$RNA_processing$integrate_rna) 'integrated.cca' else 'rna_merged_pca',
+                     if (cfg$ATAC_processing$integrate_atac) 'integrated_lsi' else 'lsi')
+    stopifnot(identical(reduction.list, expected),
               identical(dims.list, list(1:35, 2:45)))
     Seurat::FindMultiModalNeighbors(object, reduction.list = reduction.list,
                                     dims.list = dims.list, ...)
@@ -48,6 +50,17 @@ run_checks <- function() {
   result <- readRDS(env$args[1])
   stopifnot(identical(colnames(result), cells), 'wsnn_clusters' %in% colnames(result[[]]),
             identical(result@misc$wnn_reductions, c(RNA = 'integrated.cca', ATAC = 'lsi')))
+  # Cover the other integration-switch combinations; WNN must select the
+  # appropriate reduction from whichever saved modality objects it receives.
+  for (switches in list(c(FALSE, FALSE), c(FALSE, TRUE), c(TRUE, TRUE))) {
+    cfg$RNA_processing$integrate_rna <- switches[1]
+    cfg$ATAC_processing$integrate_atac <- switches[2]
+    for (expr in parse('scripts/08_wnn_stage.R')[-(1:2)]) eval(expr, env)
+    result <- readRDS(env$args[1])
+    stopifnot(identical(result@misc$wnn_reductions,
+      c(RNA = if (switches[1]) 'integrated.cca' else 'rna_merged_pca',
+        ATAC = if (switches[2]) 'integrated_lsi' else 'lsi')))
+  }
   # Different source cell order must be aligned; contradictory original
   # barcodes must fail before combining assays or computing neighbours.
   bad <- atac; bad$barcode[1] <- 'wrong_barcode'; saveRDS(bad, atac_file)

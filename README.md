@@ -32,11 +32,11 @@ conda run -p /suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome \
   Rscript -e 'stopifnot(requireNamespace("DoubletFinder", quietly = TRUE), requireNamespace("cellXY", quietly = TRUE))'
 ```
 
-The sample CSV must contain only `stage,sample_id,arc_out,mgatk_dir`; see [examples/samples.csv](examples/samples.csv). For example:
+The sample CSV must contain only `stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir`; see [examples/samples.csv](examples/samples.csv). For example:
 
 ```csv
-stage,sample_id,arc_out,mgatk_dir
-E8.5,5019_Hi_1,/path/to/arc/outs,/path/to/mgatk/final
+stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir
+E8.5,5019_Hi_1,/path/to/arc/outs,/path/to/mgatk_enriched/final,
 ```
 
 Sample IDs must be unique within each stage, start with a letter or number, and contain only letters, numbers, `_`, `.` or `-`. Sample IDs are workflow labels and do not need to match upstream Cell Ranger or mgatk run names; the paths must identify the corresponding sample outputs, and sample-specific pipeline JSON keys must match these IDs. All execution nodes must be able to read the absolute input paths:
@@ -44,7 +44,10 @@ Sample IDs must be unique within each stage, start with a letter or number, and 
 | Input | Required content |
 |---|---|
 | `arc_out` | Cell Ranger ARC `outs` directory containing `filtered_feature_bc_matrix.h5`, `atac_fragments.tsv.gz` and its `.tbi` index |
-| `mgatk_dir` | Completed mgatk output readable by `Signac::ReadMGATK`, usually the `final` directory |
+| `mgatk_enriched_dir` | Required enriched mgatk output used by all current mitochondrial analysis, readable by `Signac::ReadMGATK`, usually the `final` directory |
+| `mgatk_dir` | Additional mgatk output reserved for future analysis; may be blank and is not read or checked for directory existence by the current analysis |
+
+All current mitochondrial measurements use `mgatk_enriched_dir`. The existing paths in `examples/samples.csv` have been moved into that column; fill in `mgatk_dir` when your additional dataset is ready. The chosen enriched output may have any directory name, including a WT directory without an `_enriched` suffix. The workflow retains both sources in its sample records for future analysis branches.
 
 Gene symbols, the reference genome and barcodes are requirements for the existing data, not additional files or CSV columns:
 
@@ -259,11 +262,9 @@ stage_results/
     ├── objects/
     │   ├── rna_unintegrated.rds
     │   ├── rna_integrated.rds         # only when integrate_rna = true
-    │   ├── rna_stage.rds
     │   ├── rna_cell_annotations.tsv
     │   ├── atac_unintegrated.rds
     │   ├── atac_integrated.rds        # only when integrate_atac = true
-    │   ├── atac_stage.rds
     │   ├── wnn.rds
     │   ├── wnn_mgatk.rds
     │   └── all_cells_mtDNA.tsv
@@ -281,14 +282,14 @@ stage_results/
 | `qc/filtered/<sample>.qc.tsv` | One summary row per sample: initial, QC-passing, cluster-retained and singlet cell counts, plus DoubletFinder settings/results |
 | `qc/filtered/<sample>_Doublet.pdf` | RNA UMAP showing singlet/doublet classifications before doublet removal |
 | `mgatk/<sample>.mtDNA.tsv` | Per-cell mitochondrial depth, counts and individual/pooled 5019-panel heteroplasmy for retained singlets |
-| `objects/rna_*.rds`, `objects/atac_*.rds` | Stage Seurat objects before/after integration; `rna_stage.rds` and `atac_stage.rds` contain the selected results used by WNN |
+| `objects/rna_*.rds`, `objects/atac_*.rds` | Stage Seurat objects before/after integration; WNN reads the integrated file when its integration switch is enabled, otherwise the unintegrated file |
 | `objects/rna_cell_annotations.tsv` | Per-cell sample ID, cell-cycle scores/phase and sex prediction |
 | `objects/wnn.rds` | Combined RNA/ATAC object with modality reductions, WNN UMAP, modality weights and WNN clusters |
 | `objects/wnn_mgatk.rds` | Final combined object, including mitochondrial measurements in cell metadata; use this for further analysis |
 | `objects/all_cells_mtDNA.tsv` | All samples' mitochondrial measurements, ordered to match the final WNN object's cells |
 | `deg/cluster_markers.tsv` | Positive RNA markers for WNN clusters, filtered to finite adjusted p-values below 0.05 |
 
-The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled.
+The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled. Each distinct RNA/ATAC analysis object is saved once; WNN uses `rna_integrated.rds` or `rna_unintegrated.rds` and `atac_integrated.rds` or `atac_unintegrated.rds` according to those switches.
 
 The per-sample `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints remain in the `QC_FILTER_DOUBLET` task directory under Nextflow's `work/` directory; they are not copied into the published results. Task logs (`.command.log`, `.command.err`, `.command.out`) are also under `work/`, while `.nextflow.log` is in the launch directory. Keep `work/` and `.nextflow/` when resuming runs. ATAC-containing RDS objects refer to the original fragment files, so those shared input paths must remain accessible when using fragment-based Signac functions later.
 
@@ -395,7 +396,7 @@ Cell counts are reported per sample in `<outdir>/<stage>/qc/filtered/<sample>.qc
 
 After individual processing it selects shared SCT integration features, prepares SCT residuals, and merges samples. It retains joined log-normalized RNA for marker testing, computes `rna_merged_pca` on SCT features, and creates `rna_unintegrated_clusters` and `rna_unintegrated_umap`. When enabled, SCT CCA `IntegrateLayers` creates `integrated.cca`, followed by `rna_integrated_clusters`, `rna_integrated_umap`, and `PrepSCTFindMarkers`. This implements the YY_05 merge/integration sequence with explicit dimension settings; see [Seurat CCA integration](https://satijalab.org/seurat/reference/ccaintegration).
 
-Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, selected `rna_stage.rds`, and `rna_cell_annotations.tsv` containing per-cell sample, cycle scores/phase and sex prediction. No individual preprocessed RDS files are saved.
+Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, and `rna_cell_annotations.tsv` containing per-cell sample, cycle scores/phase and sex prediction. No individual preprocessed RDS files are saved.
 
 ### Step 06b: individual ATAC preprocessing, then stage merge and integration
 
@@ -403,11 +404,11 @@ Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, select
 
 When enabled, `FindIntegrationAnchors(reduction = "rlsi")` and `IntegrateEmbeddings` create `integrated_lsi`, followed by `atac_integrated_clusters` and `atac_integrated_umap`. ATAC integration uses a weighting neighbourhood capped at 100 and further limited by the smallest sample size and the distinct anchor cells in each sample pair; the chosen value is logged and stored as `misc$atac_integration_k_weight`. This follows YY_06 and the [Signac ATAC integration workflow](https://stuartlab.org/signac/articles/integrate_atac.html).
 
-Published outputs: `atac_unintegrated.rds`, optional `atac_integrated.rds`, and selected `atac_stage.rds`. No individual preprocessed RDS files are saved. Compare integrated and unintegrated results because integration can reduce sample-associated biological variation.
+Published outputs: `atac_unintegrated.rds` and optional `atac_integrated.rds`. No individual preprocessed RDS files are saved. Compare integrated and unintegrated results because integration can reduce sample-associated biological variation.
 
 ### Step 06c: read precomputed mgatk results per sample
 
-`06c_mgatk_metrics.R` reads completed mgatk results with [Signac `ReadMGATK`](https://stuartlab.org/signac/reference/readmgatk); it does not run mitochondrial alignment, variant calling or mgatk itself. Following the supplied `YY_06_mgatk_heteroplasmy.R`, it measures the three 5019-associated sites and validates their expected reference alleles. It matches original retained RNA barcodes and exact base/position/strand row names, preserving cell order. Missing mgatk barcodes are retained with missing measurements; `mgatk_matched` distinguishes them from matched cells with zero coverage.
+`06c_mgatk_metrics.R` reads completed mgatk results with [Signac `ReadMGATK`](https://stuartlab.org/signac/reference/readmgatk); it does not run mitochondrial alignment, variant calling or mgatk itself. Following the supplied `YY_06_mgatk_heteroplasmy.R`, it reads the enriched directory supplied by Nextflow from the sample CSV's `mgatk_enriched_dir`, measures the three 5019-associated sites and validates their expected reference alleles. It matches original retained RNA barcodes and exact base/position/strand row names, preserving cell order. Missing mgatk barcodes are retained with missing measurements; `mgatk_matched` distinguishes them from matched cells with zero coverage.
 
 | Position | Reference → alternate |
 | --- | --- |

@@ -58,7 +58,7 @@ run_checks <- function() {
   setwd(task_dir)
   expressions <- parse(script)[-(1:2)]
   for (expr in expressions) eval(expr, env)
-  result <- readRDS('atac_stage.rds')
+  result <- readRDS('atac_integrated.rds')
   stopifnot(identical(requested, c(10L, 10L, 80L)), ncol(result) == 120,
             ncol(Embeddings(result, 'lsi')) == 80,
             ncol(Embeddings(result, 'integrated_lsi')) == 80,
@@ -66,20 +66,22 @@ run_checks <- function() {
             result@misc$atac_integration_k_weight < 59,
             identical(rownames(result[['ATAC']]), features),
             all(c('atac_unintegrated_umap', 'atac_integrated_umap') %in% Reductions(result)),
-            file.exists('atac_integrated.rds'))
+            file.exists('atac_integrated.rds'), !file.exists('atac_stage.rds'))
   original_counts <- do.call(cbind, lapply(files, function(file)
     GetAssayData(readRDS(file), assay = 'ATAC', layer = 'counts')))
   stopifnot(identical(GetAssayData(result, assay = 'ATAC', layer = 'counts'), original_counts))
   # Without integration, sample LSI and the unused integration range are skipped.
+  unlink(c('atac_integrated.rds', 'atac_unintegrated.rds'))
   cfg$ATAC_processing$integrate_atac <- FALSE
   cfg$ATAC_processing$ATAC_integrate_dims <- '1:200'
   cfg$WNN$ATAC_dims <- '2:30'
   jsonlite::write_json(cfg, config, auto_unbox = TRUE, null = 'null')
   requested <- integer()
   for (expr in expressions) eval(expr, env)
-  result <- readRDS('atac_stage.rds')
+  result <- readRDS('atac_unintegrated.rds')
   stopifnot(identical(requested, 30L), ncol(Embeddings(result, 'lsi')) == 30,
-            !('integrated_lsi' %in% Reductions(result)))
+            !('integrated_lsi' %in% Reductions(result)),
+            !file.exists('atac_integrated.rds'), !file.exists('atac_stage.rds'))
 }
 run_checks()
 cat('All ATAC stage/integration checks passed.\n')

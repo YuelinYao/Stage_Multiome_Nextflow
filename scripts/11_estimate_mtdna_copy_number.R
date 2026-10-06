@@ -86,7 +86,8 @@ count_read_bases <- function(cigar, position, sequence, quality, intervals, min_
     qry <- GenomicAlignments::cigarRangesAlongQuerySpace(cigar, ops = c("M", "=", "X"))[[1]]
   }
   if (!length(ref)) return(0)
-  if (quality == "*" || !nzchar(quality)) return(0)
+  if (is.na(quality) || quality == "*" || !nzchar(quality) ||
+      is.na(sequence) || sequence == "*" || !nzchar(sequence)) return(0)
   bases <- strsplit(sequence, "", fixed = TRUE)[[1]]
   qualities <- utf8ToInt(quality) - 33L
   if (length(qualities) != length(bases)) fail("Inconsistent BAM sequence/qualities")
@@ -177,31 +178,37 @@ main <- function(args) {
   cells <- readLines(opts$barcodes, warn = FALSE)
   if (!length(cells) || any(!nzchar(cells)) || anyDuplicated(cells)) fail("Empty/duplicate barcode list")
   lengths <- Rsamtools::scanBamHeader(opts$bam)[[1]]$targets
-  reference <- if (!is.null(opts[["reference-bed"]])) {
-    read_bed(opts[["reference-bed"]], lengths)
-  } else {
-    if (is.null(opts$fragments) || is.null(opts$blacklist)) fail("Provide reference BED or fragments AND blacklist")
-    select_reference(opts$fragments, cells, lengths, read_bed(opts$blacklist, lengths),
-                     opts[["bin-size"]], opts$quantile)
-  }
-  if (any(!grepl("^chr([1-9]|1[0-9])$", as.character(GenomicRanges::seqnames(reference)))))
-    fail("Reference BED must contain mouse autosomes chr1-chr19 only")
-  reference <- GenomicRanges::sort(GenomicRanges::reduce(reference, ignore.strand = TRUE))
-  reference_bp <- sum(IRanges::width(reference))
   # Direct CB matching is preferred. If CB contains ATAC-library barcodes, the
   # ARC metrics table supplies the explicit ATAC->canonical barcode translation.
   lookup <- setNames(cells, cells)
   if (!is.null(opts[["barcode-map"]])) {
     map <- read.csv(opts[["barcode-map"]], colClasses = "character", check.names = FALSE)
-    if (!all(c("barcode", "atac_barcode") %in% names(map))) fail("Barcode map needs barcode and atac_barcode")
+    if (!all(c("barcode", "atac_barcode") %in% names(map)) || anyDuplicated(names(map)))
+      fail("Barcode map needs unique barcode and atac_barcode columns")
     map <- map[map$barcode %in% cells, , drop = FALSE]
-    if (anyNA(map[, c("barcode", "atac_barcode")]) || anyDuplicated(map$atac_barcode)) fail("Invalid barcode map")
+    if (anyNA(map[, c("barcode", "atac_barcode")]) ||
+        any(!nzchar(map$barcode)) || any(!nzchar(map$atac_barcode)) ||
+        anyDuplicated(map$barcode) || anyDuplicated(map$atac_barcode))
+      fail("Barcode map must have nonempty, one-to-one barcode mappings")
     for (i in seq_len(nrow(map))) {
       old <- lookup[map$atac_barcode[i]]
       if (!is.na(old) && old != map$barcode[i]) fail("Conflicting barcode translation")
       lookup[map$atac_barcode[i]] <- map$barcode[i]
     }
   }
+  reference <- if (!is.null(opts[["reference-bed"]])) {
+    read_bed(opts[["reference-bed"]], lengths)
+  } else {
+    if (is.null(opts$fragments) || is.null(opts$blacklist)) fail("Provide reference BED or fragments AND blacklist")
+    # Fragment barcodes may be canonical ARC IDs or their ATAC aliases.
+    # Apply the same accepted IDs used for BAM and mgatk depth matching.
+    select_reference(opts$fragments, names(lookup), lengths, read_bed(opts$blacklist, lengths),
+                     opts[["bin-size"]], opts$quantile)
+  }
+  if (any(!grepl("^chr([1-9]|1[0-9])$", as.character(GenomicRanges::seqnames(reference)))))
+    fail("Reference BED must contain mouse autosomes chr1-chr19 only")
+  reference <- GenomicRanges::sort(GenomicRanges::reduce(reference, ignore.strand = TRUE))
+  reference_bp <- sum(IRanges::width(reference))
   # Use the genome-wide depth table, not coverage at m.5019. Missing mgatk cells
   # stay NA: lack of a measurement must never be interpreted as zero copies.
   depth_files <- list.files(opts[["mgatk-dir"]], pattern = "[.]depthTable[.]txt$", full.names = TRUE)

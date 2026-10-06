@@ -38,15 +38,27 @@ run_checks <- function() {
   env$args <- c(config, files)
   setwd(task_dir)
   for (expr in parse(script)[-(1:2)]) eval(expr, env)
-  result <- readRDS('rna_stage.rds')
+  result <- readRDS('rna_integrated.rds')
   stopifnot(ncol(result) == 280,
             ncol(Embeddings(result, 'rna_merged_pca')) == 30,
             ncol(Embeddings(result, 'integrated.cca')) == 30,
             all(c('rna_unintegrated_umap', 'rna_integrated_umap') %in% Reductions(result)),
             all(c('rna_unintegrated_clusters', 'rna_integrated_clusters') %in% colnames(result[[]])),
-            file.exists('rna_unintegrated.rds'), file.exists('rna_integrated.rds'))
+            file.exists('rna_unintegrated.rds'), file.exists('rna_integrated.rds'),
+            !file.exists('rna_stage.rds'))
   annotations <- read.delim('rna_cell_annotations.tsv')
   stopifnot(nrow(annotations) == 280, !anyDuplicated(annotations$cell_id))
+  # A fresh single-sample run without integration saves only the unintegrated
+  # object; it is also the object that Nextflow supplies to WNN.
+  unlink(c('rna_unintegrated.rds', 'rna_integrated.rds', 'rna_cell_annotations.tsv'))
+  cfg$RNA_processing$integrate_rna <- FALSE
+  jsonlite::write_json(cfg, config, auto_unbox = TRUE, null = 'null')
+  env$args <- c(config, files[1])
+  for (expr in parse(script)[-(1:2)]) eval(expr, env)
+  result <- readRDS('rna_unintegrated.rds')
+  stopifnot(ncol(result) == 140, 'rna_merged_pca' %in% Reductions(result),
+            !('integrated.cca' %in% Reductions(result)),
+            !file.exists('rna_integrated.rds'), !file.exists('rna_stage.rds'))
 }
 run_checks()
 cat('All RNA SCT/CCA integration checks passed.\n')

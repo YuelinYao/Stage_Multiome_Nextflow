@@ -61,4 +61,3 @@ if (settings$integrate_rna) {
   obj <- PrepSCTFindMarkers(obj, verbose = FALSE)
   saveRDS(obj, "rna_integrated.rds")
 }
-saveRDS(obj, "rna_stage.rds")

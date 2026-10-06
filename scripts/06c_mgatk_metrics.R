@@ -2,7 +2,7 @@
 source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1])), "00_common.R"))
 args <- commandArgs(trailingOnly = TRUE)
 
-# Usage: sample_id retained_rna.rds mgatk_final_dir sample.mtDNA.tsv
+# Usage: sample_id retained_rna.rds mgatk_enriched_final_dir sample.mtDNA.tsv
 # The 5019-associated variant panel follows YY_06_mgatk_heteroplasmy.R.
 # Heteroplasmy_<position> and Depth_<position> use its metadata column names.
 # This task computes per-cell metrics; step 09 attaches them to the WNN object.
