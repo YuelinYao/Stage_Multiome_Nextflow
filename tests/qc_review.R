@@ -3,6 +3,7 @@
 run_checks <- function() {
   original_dir <- getwd()
   script <- normalizePath('scripts/04_qc_review.R')
+  supplied_json <- normalizePath('examples/pipeline_settings.example.json')
   env <- new.env(parent = globalenv())
   for (expr in parse('scripts/00_common.R'))
     if (is.call(expr) && identical(expr[[1]], as.name('<-'))) eval(expr, env)
@@ -17,7 +18,9 @@ run_checks <- function() {
   a <- fixture('A', c(1, 2, 3, 4, NA_real_, Inf))
   b <- fixture('B', c(10, 20, 30, 40, 50, 60))
   env$write_tsv(a, 'a.tsv'); env$write_tsv(b, 'b.tsv')
-  env$args <- c('summary.tsv', 'mad.tsv', 'template.json', 'stage.pdf', '50', '5000', 'b.tsv', 'a.tsv')
+  file.copy(supplied_json, 'pipeline_settings.json')
+  original_json <- readBin('pipeline_settings.json', 'raw', file.info('pipeline_settings.json')$size)
+  env$args <- c('summary.tsv', 'mad.tsv', 'stage.pdf', 'b.tsv', 'a.tsv')
   # Skip only the source() and commandArgs() statements; execute the real code.
   expressions <- parse(script)[-(1:2)]
   for (expr in expressions) eval(expr, env)
@@ -32,25 +35,15 @@ run_checks <- function() {
   stopifnot(pooled$n == 10, pooled$median == median(c(1:4, seq(10,60,10))))
   candidates <- read.delim('mad.tsv')
   stopifnot(nrow(candidates) == 72, setequal(candidates$mad_multiplier, c(3,5,7)))
-  template_text <- paste(readLines('template.json'), collapse='\n')
-  for (key in c('sample_overrides', 'exclude_clusters'))
-    stopifnot(grepl(paste0('"', key, '"\\s*:\\s*\\{\\s*\\}'), template_text, perl=TRUE))
-  template <- jsonlite::fromJSON('template.json', simplifyVector = FALSE)
-  stopifnot(!any(c('expected_rate', 'sample_rates') %in% names(template$doublet)),
-            template$peaks$peak_min == 50, template$peaks$peak_max == 5000)
-  stopifnot(all(c('review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN') %in% names(template)),
-            !('clustering' %in% names(template)),
-            identical(template$ATAC_processing$min_cutoff, 'q5'))
-  stopifnot(setequal(names(template$thresholds), env$qc_metric_names),
-    all(vapply(template$thresholds, function(x) is.null(x$min) && is.null(x$max), logical(1))),
-    file.info('stage.pdf')$size > 0)
-  # The review template intentionally requires edited bounds before analysis.
-  stopifnot(inherits(tryCatch(env$read_pipeline_config('template.json'), error=identity), 'error'))
+  stopifnot(file.info('stage.pdf')$size > 0,
+    identical(list.files(pattern = '[.]json$'), 'pipeline_settings.json'),
+    identical(readBin('pipeline_settings.json', 'raw', file.info('pipeline_settings.json')$size),
+              original_json))
   # Malformed and duplicated input data should fail before publishing results.
   bad <- a; bad$nCount_RNA <- 'invalid'; env$write_tsv(bad, 'bad.tsv')
-  env$args <- c(env$args[1:6], 'bad.tsv')
+  env$args <- c(env$args[1:3], 'bad.tsv')
   stopifnot(inherits(tryCatch({for(expr in expressions) eval(expr, env)}, error=identity), 'error'))
-  env$args <- c(env$args[1:6], 'a.tsv', 'a.tsv')
+  env$args <- c(env$args[1:3], 'a.tsv', 'a.tsv')
   stopifnot(inherits(tryCatch({for(expr in expressions) eval(expr, env)}, error=identity), 'error'))
 }
 run_checks()

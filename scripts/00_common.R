@@ -70,7 +70,7 @@ qc_table <- function(sample, assays) {
     r[cells, qc_metric_names[1:4], drop = FALSE],
     a[cells, qc_metric_names[5:8], drop = FALSE], check.names = FALSE)
 }
-# Independent defaults for each analysis step; used by the reader and template.
+# Independent defaults for each analysis step, used by the configuration reader.
 pipeline_analysis_defaults <- function() list(
   review_QC_cluster = list(RNA_dims = "1:20", algorithm = 3L, resolution = 2),
   doublet = list(PC_dims = "1:20", algorithm = 3L, resolution = 2),
@@ -145,7 +145,7 @@ read_pipeline_config <- function(file, sample = NULL) {
       validate_bounds(cfg$sample_overrides[[id]][[nm]], paste(id, nm, sep = "/"))
   if (!is.null(cfg$clustering))
     stop_bad("The shared clustering section has been replaced by review_QC_cluster, ",
-             "doublet, RNA_processing, ATAC_processing and WNN; use the new template")
+             "doublet, RNA_processing, ATAC_processing and WNN; see examples/pipeline_settings.example.json")
   parse_dims <- function(x, name) {
     if (length(x) != 1L || !is.character(x) ||
         !grepl("^[1-9][0-9]*:[1-9][0-9]*$", x))

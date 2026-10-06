@@ -114,13 +114,12 @@ process QC_REVIEW {
   output:
   path 'qc_summary.tsv'
   path 'qc_mad_candidates.tsv'
-  path 'pipeline_settings.template.json'
   path 'all_cells_qc_metrics.tsv'
   path 'stage_qc_distributions.pdf'
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/04_qc_review.R")} qc_summary.tsv qc_mad_candidates.tsv pipeline_settings.template.json stage_qc_distributions.pdf ${params.peak_min} ${params.peak_max} ${metric_files.collect { shellQuote(it) }.join(' ')}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/04_qc_review.R")} qc_summary.tsv qc_mad_candidates.tsv stage_qc_distributions.pdf ${metric_files.collect { shellQuote(it) }.join(' ')}
   """
 }
 

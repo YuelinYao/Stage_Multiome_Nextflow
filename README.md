@@ -67,18 +67,9 @@ Run all phases (review, cluster review, analysis) from the project directory wit
 
 ## Pipeline settings JSON
 
-First create `/absolute/path/pipeline_settings.json` with your peak settings. A minimal JSON is sufficient for the initial review:
+Supply your complete `/absolute/path/pipeline_settings.json` from the start. Use your existing file or copy [examples/pipeline_settings.example.json](examples/pipeline_settings.example.json) and edit it for your samples. The workflow reads this file; it does not create or overwrite a settings JSON.
 
-```json
-{
-  "peaks": {
-    "peak_min": 20,
-    "peak_max": 10000
-  }
-}
-```
-
-Then review raw QC distributions. This phase reads only the JSON's peak settings; QC thresholds can be absent or unset. Omitting `--json` uses the default peak widths of 20 and 10,000 bp.
+First review raw QC distributions. This phase reads only the JSON's peak settings and does not apply its QC thresholds. Omitting `--json` in this phase uses default peak widths of 20 and 10,000 bp. Cluster review and analysis require the complete JSON.
 
 ```bash
 nextflow run main.nf \
@@ -90,7 +81,7 @@ nextflow run main.nf \
   --phase review -profile slurm,conda -resume
 ```
 
-Inspect `stage_results/E8.5/qc/review/`. Copy the generated `pipeline_settings.template.json` to `/absolute/path/pipeline_settings.json` and enter your chosen numeric bounds. The template records the peak limits used in review and includes the QC, clustering and DoubletFinder settings needed for later phases. Its all-null thresholds deliberately fail validation in cluster review and analysis until edited. Thresholds in `examples/pipeline_settings.example.json` are illustrative, not recommendations for your samples. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
+Inspect `stage_results/E8.5/qc/review/`, then edit the QC bounds in your existing `/absolute/path/pipeline_settings.json`. Thresholds in `examples/pipeline_settings.example.json` are illustrative, not recommendations for your samples. Every shared QC metric needs at least one numeric bound before cluster review or analysis. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
 
 Then inspect clusters of the QC-passing cells before DoubletFinder:
 
@@ -128,7 +119,7 @@ Section and parameter names are case-sensitive. Unknown sections, duplicate keys
 
 | JSON section | Parameters | Script that uses them |
 | --- | --- | --- |
-| `peaks` | `peak_min`, `peak_max` | `main.nf` reads the limits and passes them to `02_consensus_peaks.R`; `04_qc_review.R` records them in the template |
+| `peaks` | `peak_min`, `peak_max` | `main.nf` reads the limits and passes them to `02_consensus_peaks.R` |
 | `thresholds` | `min`, `max` for each of the eight QC metrics | `05a_review_clusters.R`, `05b_qc_doubletfinder.R` |
 | `sample_overrides` | Per-sample `min`, `max` for selected QC metrics | `05a_review_clusters.R`, `05b_qc_doubletfinder.R` |
 | `review_QC_cluster` | `RNA_dims`, `algorithm`, `resolution` | `05a_review_clusters.R` |
@@ -148,7 +139,7 @@ The `algorithm` key uses Seurat's clustering algorithm codes in every analysis s
 | `3` | SLM (Smart Local Moving) |
 | `4` | Leiden |
 
-The template defaults to `3`. See [Seurat `FindClusters`](https://satijalab.org/seurat/reference/findclusters) for the algorithm definitions.
+The configuration defaults to `3`. See [Seurat `FindClusters`](https://satijalab.org/seurat/reference/findclusters) for the algorithm definitions.
 
 **1. `peaks`: common peak widths.** Used from the initial review phase, before QC metrics are calculated. Both width boundaries are excluded. Omitted settings default to 20 and 10,000 bp; keep them consistent across all phases.
 
@@ -159,7 +150,7 @@ The template defaults to `3`. See [Seurat `FindClusters`](https://satijalab.org/
 }
 ```
 
-**2. `thresholds`: shared cell QC limits.** After reviewing the distributions, fill in `min` and `max` for all eight metrics in the generated template. Each metric needs at least one numeric bound; `null` disables one side. Cells must pass all eight metrics, bounds are inclusive, and non-finite values fail QC. These thresholds are applied before clustering in 05a and again in 05b. For example, one metric entry is:
+**2. `thresholds`: shared cell QC limits.** After reviewing the distributions, edit `min` and `max` for all eight metrics in your pipeline JSON. Each metric needs at least one numeric bound; `null` disables one side. Cells must pass all eight metrics, bounds are inclusive, and non-finite values fail QC. These thresholds are applied before clustering in 05a and again in 05b. For example, one metric entry is:
 
 ```json
 "nCount_RNA": {"min": 1000, "max": 40000}
@@ -234,7 +225,72 @@ By default, the expected rate is estimated from ARC's detected-cell count using 
 }
 ```
 
-All dimension strings are inclusive: `"1:20"` selects components 1–20. Each analysis section has independent defaults matching the examples above; changing one section does not change another section's clustering settings. The old shared `clustering` section is rejected with a migration message: copy its settings into the relevant new sections or start from the new template. Keep QC thresholds and `review_QC_cluster` settings fixed after cluster review; changing only downstream analysis settings does not require reviewing cluster IDs again.
+All dimension strings are inclusive: `"1:20"` selects components 1–20. Each analysis section has independent defaults matching the examples above; changing one section does not change another section's clustering settings. The old shared `clustering` section is rejected with a migration message: copy its settings into the relevant new sections or adapt the example JSON. Keep QC thresholds and `review_QC_cluster` settings fixed after cluster review; changing only downstream analysis settings does not require reviewing cluster IDs again.
+
+## Output files and directory structure
+
+Published results are organised under `<outdir>/<stage>/`. For example, `--outdir stage_results --stage E8.5` creates the structure below after completing all three phases. `<sample>` is the `sample_id` from your CSV, and per-sample files are repeated for each selected sample.
+
+```text
+stage_results/
+└── E8.5/
+    ├── peaks/
+    │   ├── sample/
+    │   │   └── <sample>.bed
+    │   └── common_peaks.bed
+    ├── qc/
+    │   ├── review/
+    │   │   ├── <sample>.metrics.tsv
+    │   │   ├── <sample>.distributions.pdf
+    │   │   ├── all_cells_qc_metrics.tsv
+    │   │   ├── qc_summary.tsv
+    │   │   ├── qc_mad_candidates.tsv
+    │   │   └── stage_qc_distributions.pdf
+    │   ├── cluster_review/
+    │   │   ├── <sample>.cluster_cells.tsv
+    │   │   ├── <sample>.cluster_summary.tsv
+    │   │   ├── <sample>.cluster_qc.pdf
+    │   │   └── <sample>.cluster_markers.tsv
+    │   └── filtered/
+    │       ├── <sample>.qc.tsv
+    │       └── <sample>_Doublet.pdf
+    ├── mgatk/
+    │   └── <sample>.mtDNA.tsv
+    ├── objects/
+    │   ├── rna_unintegrated.rds
+    │   ├── rna_integrated.rds         # only when integrate_rna = true
+    │   ├── rna_stage.rds
+    │   ├── rna_cell_annotations.tsv
+    │   ├── atac_unintegrated.rds
+    │   ├── atac_integrated.rds        # only when integrate_atac = true
+    │   ├── atac_stage.rds
+    │   ├── wnn.rds
+    │   ├── wnn_mgatk.rds
+    │   └── all_cells_mtDNA.tsv
+    └── deg/
+        └── cluster_markers.tsv
+```
+
+| Files or directory | Contents and use |
+| --- | --- |
+| `peaks/sample/<sample>.bed` | Peaks called separately for each sample |
+| `peaks/common_peaks.bed` | Stage-level common intervals used to recount ATAC fragments |
+| `qc/review/` | Per-cell QC metrics before filtering, distribution plots, sample/stage summaries, MAD candidates |
+| `qc/cluster_review/<sample>.cluster_cells.tsv` | QC-passing barcodes with the exact reviewed cluster assignments used for cluster removal in analysis |
+| Other `qc/cluster_review/` files | Cluster QC summaries, plots and significant positive RNA markers for manual review |
+| `qc/filtered/<sample>.qc.tsv` | One summary row per sample: initial, QC-passing, cluster-retained and singlet cell counts, plus DoubletFinder settings/results |
+| `qc/filtered/<sample>_Doublet.pdf` | RNA UMAP showing singlet/doublet classifications before doublet removal |
+| `mgatk/<sample>.mtDNA.tsv` | Per-cell mitochondrial depth, counts and individual/pooled 5019-panel heteroplasmy for retained singlets |
+| `objects/rna_*.rds`, `objects/atac_*.rds` | Stage Seurat objects before/after integration; `rna_stage.rds` and `atac_stage.rds` contain the selected results used by WNN |
+| `objects/rna_cell_annotations.tsv` | Per-cell sample ID, cell-cycle scores/phase and sex prediction |
+| `objects/wnn.rds` | Combined RNA/ATAC object with modality reductions, WNN UMAP, modality weights and WNN clusters |
+| `objects/wnn_mgatk.rds` | Final combined object, including mitochondrial measurements in cell metadata; use this for further analysis |
+| `objects/all_cells_mtDNA.tsv` | All samples' mitochondrial measurements, ordered to match the final WNN object's cells |
+| `deg/cluster_markers.tsv` | Positive RNA markers for WNN clusters, filtered to finite adjusted p-values below 0.05 |
+
+The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled.
+
+The per-sample `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints remain in the `QC_FILTER_DOUBLET` task directory under Nextflow's `work/` directory; they are not copied into the published results. Task logs (`.command.log`, `.command.err`, `.command.out`) are also under `work/`, while `.nextflow.log` is in the launch directory. Keep `work/` and `.nextflow/` when resuming runs. ATAC-containing RDS objects refer to the original fragment files, so those shared input paths must remain accessible when using fragment-based Signac functions later.
 
 ## Details for each step
 
@@ -263,7 +319,7 @@ Set the width limits in the pipeline JSON supplied through `--json`:
 
 This retains merged intervals with width strictly greater than 20 bp and strictly less than 10,000 bp; both boundaries are excluded. These are also the defaults when the settings are omitted. To change them, edit `peak_min` and `peak_max` in the JSON. For example, values of 50 and 5,000 retain widths strictly greater than 50 bp and strictly less than 5,000 bp.
 
-Nextflow reads these settings before creating the common peak set in every phase, including the initial review when QC thresholds may still be unset. The generated `pipeline_settings.template.json` records the limits used.
+Nextflow reads these settings before creating the common peak set in every phase, including the initial review when QC thresholds may still be unset. Maintain the selected limits in your supplied pipeline JSON.
 
 Use the same peak limits for review, cluster review and analysis. If you change them, rerun review and cluster review because the common peak set, ATAC counts and QC-passing cells may change.
 
@@ -296,9 +352,8 @@ Both the per-sample `<sample>.metrics.tsv` files and the combined `all_cells_qc_
 | `qc_summary.tsv` | One row per sample/metric, plus pooled `ALL_STAGE`: n, mean, SD, min, quantiles, median, max, scaled MAD and 3/5/7-MAD bounds |
 | `qc_mad_candidates.tsv` | One row per sample/metric/multiplier with lower and upper bounds |
 | `stage_qc_distributions.pdf` | Eight violin-plot pages comparing samples |
-| `pipeline_settings.template.json` | Editable thresholds and analysis settings; written by `jsonlite::write_json()` in the task work directory, then copied to `<outdir>/<stage>/qc/review/pipeline_settings.template.json` |
 
-Run `Rscript tests/qc_review.R` to check table combination, QC summaries, MAD bounds, template generation and plotting with synthetic data.
+Run `Rscript tests/qc_review.R` to check table combination, QC summaries, MAD bounds, plotting and preservation of your supplied JSON with synthetic data.
 
 For k = 3, 5 or 7, bounds are `median ± k × mad(x, constant = 1.4826)` and appear as `mad_k_lower`/`mad_k_upper` in the summary. Non-finite values are excluded from statistics. Bounds are not clipped to zero and are not automatically applied. Zero MAD gives equal lower/upper bounds; inspect the distribution before choosing thresholds.
 

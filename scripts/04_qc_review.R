@@ -1,14 +1,10 @@
 #!/usr/bin/env Rscript
 source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1])), "00_common.R"))
 args <- commandArgs(trailingOnly = TRUE)
-stopifnot(length(args) >= 7L)
-summary_file <- args[1]; candidates_file <- args[2]; json_file <- args[3]
-plot_file <- args[4]
-peak_min <- as.numeric(args[5]); peak_max <- as.numeric(args[6])
-if (any(!is.finite(c(peak_min, peak_max))) || peak_min < 0 || peak_min >= peak_max ||
-    any(c(peak_min, peak_max) != floor(c(peak_min, peak_max))))
-  stop_bad("Peak widths require nonnegative integers with peak_min < peak_max")
-files <- args[-(1:6)]
+# QC review writes measurements and plots; the user maintains the pipeline JSON.
+stopifnot(length(args) >= 4L)
+summary_file <- args[1]; candidates_file <- args[2]; plot_file <- args[3]
+files <- args[-(1:3)]
 tabs <- lapply(files, function(f) {
   # Preserve identifiers literally (including numeric-looking barcodes).
   tab <- read.delim(f, check.names = FALSE,
@@ -52,17 +48,3 @@ for (sample in names(groups)) for (metric in qc_metric_names) {
 write_tsv(do.call(rbind, summaries), summary_file)
 write_tsv(do.call(rbind, candidates), candidates_file)
 plot_qc_violins(all, plot_file, "QC distributions by sample")
-analysis_defaults <- pipeline_analysis_defaults()
-template <- list(
-  peaks = list(peak_min = peak_min, peak_max = peak_max),
-  note = "Fill the min/max values after reviewing plots and MAD candidates. null disables one side. Do not use this template unchanged.",
-  thresholds = setNames(lapply(qc_metric_names, function(nm) list(min = NULL, max = NULL)), qc_metric_names),
-  # Named empty lists serialize as JSON objects {}, not arrays [].
-  sample_overrides = setNames(list(), character()),
-  review_QC_cluster = analysis_defaults$review_QC_cluster,
-  doublet = c(analysis_defaults$doublet,
-              list(exclude_clusters = setNames(list(), character()))),
-  RNA_processing = analysis_defaults$RNA_processing,
-  ATAC_processing = analysis_defaults$ATAC_processing,
-  WNN = analysis_defaults$WNN)
-jsonlite::write_json(template, json_file, auto_unbox = TRUE, pretty = TRUE, null = "null")
