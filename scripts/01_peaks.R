@@ -13,6 +13,15 @@ args <- commandArgs(trailingOnly = TRUE)
   obj$peak_group <- "filtered_cells"
   peaks <- CallPeaks(obj, assay = "ATAC", group.by = "peak_group", macs2.path = macs,
                      effective.genome.size = 1.87e9, name = sample)
-  peaks <- peaks[grepl("^chr([0-9]+|X|Y)$", as.character(GenomicRanges::seqnames(peaks)))]
-  if (length(peaks) == 0) stop_bad("No nuclear MACS peaks: ", sample)
+  # Use GenomeInfoDb's species-aware standard chromosome names rather than
+  # matching any numeric chromosome with a regular expression.
+  peaks <- GenomeInfoDb::keepStandardChromosomes(
+    peaks, species = "Mus musculus", pruning.mode = "coarse")
+  # Remove entire peaks overlapping mm10 blacklist regions, which can show
+  # artefactual enrichment even when they lie on standard chromosomes.
+  # invert=TRUE retains only peaks with no blacklist overlap.
+  peaks <- GenomicRanges::subsetByOverlaps(
+    x = peaks, ranges = Signac::blacklist_mm10, invert = TRUE)
+  if (length(peaks) == 0)
+    stop_bad("No MACS peaks after chromosome and mm10 blacklist filtering: ", sample)
   rtracklayer::export(peaks, outfile, format = "BED")

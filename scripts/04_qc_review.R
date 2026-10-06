@@ -5,9 +5,26 @@ stopifnot(length(args) >= 5L)
 summary_file <- args[1]; candidates_file <- args[2]; json_file <- args[3]
 plot_file <- args[4]
 files <- args[-(1:4)]
-tabs <- lapply(files, function(f) read.delim(f, check.names = FALSE))
+tabs <- lapply(files, function(f) {
+  # Preserve identifiers literally (including numeric-looking barcodes).
+  tab <- read.delim(f, check.names = FALSE,
+                   colClasses = c(sample_id = "character", barcode = "character"))
+  required <- c("sample_id", "barcode", qc_metric_names)
+  if (!all(required %in% names(tab)) || anyDuplicated(names(tab)))
+    stop_bad("Missing or duplicated QC columns: ", f)
+  if (!nrow(tab) || anyNA(tab[, c("sample_id", "barcode")]) ||
+      any(!nzchar(tab$sample_id)) || any(!nzchar(tab$barcode)))
+    stop_bad("Empty table or missing sample/barcode identifiers: ", f)
+  if (length(unique(tab$sample_id)) != 1L || tab$sample_id[1] == "ALL_STAGE")
+    stop_bad("Expected one sample per QC file; ALL_STAGE is reserved: ", f)
+  if (!all(vapply(tab[qc_metric_names], is.numeric, logical(1))))
+    stop_bad("QC metrics must be numeric: ", f)
+  tab[, required, drop = FALSE]
+})
+# Nextflow tasks can finish in any order; keep combined tables/plots consistent.
+tabs <- tabs[order(vapply(tabs, function(x) x$sample_id[1], character(1)))]
 all <- do.call(rbind, tabs)
-if (anyDuplicated(paste(all$sample_id, all$barcode))) stop_bad("Duplicate sample/barcode in QC files")
+if (anyDuplicated(all[, c("sample_id", "barcode")])) stop_bad("Duplicate sample/barcode in QC files")
 write_tsv(all, "all_cells_qc_metrics.tsv")
 groups <- c(split(all, all$sample_id), list(ALL_STAGE = all))
 summaries <- list(); candidates <- list()
@@ -34,8 +51,11 @@ plot_qc_violins(all, plot_file, "QC distributions by sample")
 template <- list(
   note = "Fill the min/max values after reviewing plots and MAD candidates. null disables one side. Do not use this template unchanged.",
   thresholds = setNames(lapply(qc_metric_names, function(nm) list(min = NULL, max = NULL)), qc_metric_names),
-  sample_overrides = list(),
-  doublet = list(expected_rate = 0.05, sample_rates = list(), exclude_clusters = list()),
+  # Named empty lists serialize as JSON objects {}, not arrays [].
+  sample_overrides = setNames(list(), character()),
+  doublet = list(expected_rate = 0.05,
+    sample_rates = setNames(list(), character()),
+    exclude_clusters = setNames(list(), character())),
   clustering = list(algorithm = 3L, resolution = 2,
                     RNA_dims = "1:20", RNA_umap_dims = "1:50",
                     ATAC_dims = "2:40", ATAC_integrate_dims = "1:40",

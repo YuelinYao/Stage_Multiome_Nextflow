@@ -20,8 +20,10 @@ dims <- cfg$clustering$RNA_dims
 suppressPackageStartupMessages(library(DoubletFinder))
 sweep <- paramSweep(rna, PCs = dims, sct = FALSE)
 bcmvn <- find.pK(summarizeSweep(sweep, GT = FALSE))
+bcmvn <- bcmvn[is.finite(bcmvn$BCmetric), , drop = FALSE]
+if (!nrow(bcmvn)) stop_bad("No finite DoubletFinder BCmetric: ", sample)
 pk <- suppressWarnings(as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)])))
-if (!is.finite(pk)) stop_bad("DoubletFinder pK sweep failed: ", sample)
+if (length(pk) != 1L || !is.finite(pk) || pk <= 0 || pk >= 1) stop_bad("DoubletFinder pK sweep failed: ", sample)
 n_exp <- max(1L, round(ncol(rna) * cfg$doublet$expected_rate *
   (1 - modelHomotypic(rna$pre_doublet_clusters))))
 rna <- doubletFinder(rna, PCs = dims, pK = pk, nExp = n_exp, sct = FALSE)

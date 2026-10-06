@@ -11,4 +11,9 @@ args <- commandArgs(trailingOnly = TRUE)
     FindAllMarkers(obj, only.pos = TRUE, assay = "RNA", min.pct = 0.1,
                    logfc.threshold = 0.25, test.use = "wilcox")
   } else data.frame()
+  # Apply significance to adjusted p-values explicitly.
+  if (nrow(markers)) {
+    markers <- markers[is.finite(markers$p_val_adj) & markers$p_val_adj < 0.05,
+                       , drop = FALSE]
+  }
   write_tsv(markers, "cluster_markers.tsv")

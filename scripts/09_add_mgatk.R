@@ -10,6 +10,9 @@ args <- commandArgs(trailingOnly = TRUE)
   if (!setequal(tab$cell_id, colnames(obj))) stop_bad("mgatk/Seurat cell ID mismatch")
   tab <- tab[match(colnames(obj), tab$cell_id), , drop = FALSE]
   if (!identical(tab$cell_id, colnames(obj))) stop_bad("mgatk cell order mismatch")
+  for (key in c("sample_id", "barcode"))
+    if (!identical(as.character(tab[[key]]), as.character(obj[[]][[key]])))
+      stop_bad("mgatk/Seurat metadata mismatch: ", key)
   rownames(tab) <- tab$cell_id
   obj <- AddMetaData(obj, metadata = tab[setdiff(names(tab),
     c("cell_id", "sample_id", "barcode"))])

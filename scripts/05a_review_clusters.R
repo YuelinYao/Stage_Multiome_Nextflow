@@ -25,4 +25,9 @@ Idents(rna) <- "pre_doublet_clusters"
 markers <- if (length(levels(Idents(rna))) > 1L)
   FindAllMarkers(rna, only.pos = TRUE, assay = "RNA", min.pct = 0.1,
     logfc.threshold = 0.25, verbose = FALSE) else data.frame()
+# Apply significance to adjusted p-values explicitly.
+if (nrow(markers)) {
+  markers <- markers[is.finite(markers$p_val_adj) & markers$p_val_adj < 0.05,
+                     , drop = FALSE]
+}
 write_tsv(markers, paste0(sample, ".cluster_markers.tsv"))

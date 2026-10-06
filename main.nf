@@ -9,10 +9,25 @@ params.phase = 'review'
 params.peak_min = 20
 params.peak_max = 10000
 
+// Quote every shell argument, including paths containing spaces or apostrophes.
+def shellQuote(value) { "'" + value.toString().replace("'", "'\"'\"'") + "'" }
+// Include R sources in task scripts so -resume notices helper/script edits.
+def sourceDigest = java.security.MessageDigest.getInstance('SHA-256')
+file("${projectDir}/scripts").toFile().listFiles()
+  .findAll { it.name.endsWith('.R') }.sort { it.name }.each {
+    sourceDigest.update(it.name.getBytes('UTF-8'))
+    sourceDigest.update(it.bytes)
+  }
+def scriptsHash = sourceDigest.digest().encodeHex().toString()
+
 if (!params.samples || !params.stage) error 'Provide --samples manifest.csv and --stage E8.5'
 if (!(params.phase in ['review', 'cluster_review', 'analysis'])) error '--phase must be review, cluster_review or analysis'
+if (!(params.stage.toString() ==~ /[A-Za-z0-9][A-Za-z0-9_.-]*/)) error 'Stage must be a safe directory name'
+if (!(params.peak_min.toString() ==~ /[0-9]+/) || !(params.peak_max.toString() ==~ /[0-9]+/) ||
+    params.peak_min.toString().toLong() >= params.peak_max.toString().toLong())
+  error 'Peak widths must be nonnegative integers with peak_min < peak_max'
 if (!params.macs3_path) error 'Provide --macs3_path /absolute/path/to/macs3'
-if (!file(params.macs3_path).isAbsolute()) error '--macs3_path must be absolute'
+if (!java.nio.file.Paths.get(params.macs3_path.toString()).isAbsolute()) error '--macs3_path must be absolute'
 if (!java.nio.file.Files.isRegularFile(file(params.macs3_path)) ||
     !java.nio.file.Files.isExecutable(file(params.macs3_path)))
   error "MACS3 executable not found or not executable: ${params.macs3_path}"
@@ -34,7 +49,8 @@ process PEAK_SAMPLE {
   tuple val(id), path("${id}.bed")
   script:
   """
-  Rscript ${projectDir}/scripts/01_peaks.R '${id}' '${arc}' '${params.macs3_path}' '${id}.bed'
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/01_peaks.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(params.macs3_path)} '${id}.bed'
   """
 }
 
@@ -48,7 +64,8 @@ process COMMON_PEAKS {
   path 'common_peaks.bed'
   script:
   """
-  Rscript ${projectDir}/scripts/02_consensus_peaks.R common_peaks.bed ${params.peak_min} ${params.peak_max} ${beds.join(' ')}
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/02_consensus_peaks.R")} common_peaks.bed ${params.peak_min} ${params.peak_max} ${beds.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -63,7 +80,8 @@ process QC_METRICS {
   tuple val(id), path("${id}.metrics.tsv"), path("${id}.distributions.pdf")
   script:
   """
-  Rscript ${projectDir}/scripts/03_qc_metrics.R '${id}' '${arc}' '${peaks}' '${id}.metrics.tsv' '${id}.distributions.pdf'
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/03_qc_metrics.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} '${id}.metrics.tsv' '${id}.distributions.pdf'
   """
 }
 
@@ -81,7 +99,8 @@ process QC_REVIEW {
   path 'stage_qc_distributions.pdf'
   script:
   """
-  Rscript ${projectDir}/scripts/04_qc_review.R qc_summary.tsv qc_mad_candidates.tsv qc_thresholds.template.json stage_qc_distributions.pdf ${metric_files.join(' ')}
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/04_qc_review.R")} qc_summary.tsv qc_mad_candidates.tsv qc_thresholds.template.json stage_qc_distributions.pdf ${metric_files.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -99,7 +118,8 @@ process PRE_DOUBLET_REVIEW {
   path "${id}.cluster_markers.tsv"
   script:
   """
-  Rscript ${projectDir}/scripts/05a_review_clusters.R '${id}' '${arc}' '${peaks}' '${json}'
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/05a_review_clusters.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)}
   """
 }
 
@@ -114,7 +134,8 @@ process QC_FILTER_DOUBLET {
   tuple val(id), val(mgatk), path("${id}.rna.qc.rds"), path("${id}.atac.qc.rds"), path("${id}.qc.tsv")
   script:
   """
-  Rscript ${projectDir}/scripts/05_qc_doubletfinder.R '${id}' '${arc}' '${peaks}' '${json}' '${id}.rna.qc.rds' '${id}.atac.qc.rds' '${id}.qc.tsv'
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/05_qc_doubletfinder.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)} '${id}.rna.qc.rds' '${id}.atac.qc.rds' '${id}.qc.tsv'
   """
 }
 
@@ -132,7 +153,8 @@ process MERGE_INTEGRATE_RNA {
   path 'rna_integrated.rds', optional: true, emit: integrated
   script:
   """
-  Rscript ${projectDir}/scripts/06a_preprocess_rna.R '${json}' ${objects.join(' ')}
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/06a_preprocess_rna.R")} ${shellQuote(json)} ${objects.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -149,7 +171,8 @@ process MERGE_INTEGRATE_ATAC {
   path 'atac_integrated.rds', optional: true, emit: integrated
   script:
   """
-  Rscript ${projectDir}/scripts/06b_preprocess_atac.R '${json}' ${objects.join(' ')}
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/06b_preprocess_atac.R")} ${shellQuote(json)} ${objects.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -164,7 +187,8 @@ process MGATK_METRICS {
   path "${id}.mtDNA.tsv"
   script:
   """
-  Rscript ${projectDir}/scripts/06c_mgatk_metrics.R '${id}' '${qc}' '${mgatk}' '${id}.mtDNA.tsv'
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/06c_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(mgatk)} '${id}.mtDNA.tsv'
   """
 }
 
@@ -180,7 +204,8 @@ process WNN_STAGE {
   path 'wnn.rds'
   script:
   """
-  Rscript ${projectDir}/scripts/08_wnn_stage.R wnn.rds '${json}' '${rna}' '${atac}'
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/08_wnn_stage.R")} wnn.rds ${shellQuote(json)} ${shellQuote(rna)} ${shellQuote(atac)}
   """
 }
 
@@ -196,7 +221,8 @@ process ADD_MGATK {
   path 'all_cells_mtDNA.tsv'
   script:
   """
-  Rscript ${projectDir}/scripts/09_add_mgatk.R '${wnn}' wnn_mgatk.rds all_cells_mtDNA.tsv ${metrics.join(' ')}
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/09_add_mgatk.R")} ${shellQuote(wnn)} wnn_mgatk.rds all_cells_mtDNA.tsv ${metrics.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -210,11 +236,13 @@ process DEG_STAGE {
   path 'cluster_markers.tsv'
   script:
   """
-  Rscript ${projectDir}/scripts/10_cluster_markers.R '${obj}'
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/10_cluster_markers.R")} ${shellQuote(obj)}
   """
 }
 
 workflow {
+  seenIds = new HashSet()
   rows = Channel.fromPath(params.samples, checkIfExists: true)
     .splitCsv(header: true)
     .filter { it.stage?.trim() == params.stage }
@@ -223,7 +251,9 @@ workflow {
       for (key in ['sample_id','arc_out','mgatk_dir'])
         if (!row[key]?.trim()) error "Missing ${key} in manifest row: ${row}"
       def id = row.sample_id.trim()
-      if (!(id ==~ /5019_[A-Za-z0-9_.-]+/)) error "Expected m.5019 sample_id starting 5019_: ${id}"
+      if (!(id ==~ /[A-Za-z0-9][A-Za-z0-9_.-]*/))
+        error "Invalid sample_id ${id}: start with a letter or number and use only letters, numbers, _, . or -"
+      if (!seenIds.add(id)) error "Duplicate sample_id for stage ${params.stage}: ${id}"
       def arc = file(row.arc_out.trim()).toAbsolutePath().toString()
       def mt = file(row.mgatk_dir.trim()).toAbsolutePath().toString()
       if (!file("${arc}/filtered_feature_bc_matrix.h5").exists() || !file("${arc}/atac_fragments.tsv.gz").exists())
@@ -232,6 +262,8 @@ workflow {
       if (!java.nio.file.Files.isDirectory(file(mt))) error "Missing mgatk directory: ${mt}"
       tuple(id, arc, mt)
     }
+    .toSortedList { a, b -> a[0] <=> b[0] }
+    .flatMap { it }
 
   PEAK_SAMPLE(rows)
   COMMON_PEAKS(PEAK_SAMPLE.out.map { id, bed -> bed }.collect())

@@ -75,6 +75,15 @@ read_analysis_config <- function(file, sample = NULL) {
   if (is.null(cfg$thresholds)) stop_bad("QC JSON must have thresholds")
   if (!setequal(names(cfg$thresholds), qc_metric_names))
     stop_bad("QC JSON thresholds must name exactly: ", paste(qc_metric_names, collapse = ", "))
+  for (key in c("sample_overrides")) {
+    value <- cfg[[key]]
+    if (!is.null(value) && (!is.list(value) ||
+        (length(value) && (is.null(names(value)) || any(!nzchar(names(value)))))))
+      stop_bad(key, " must be an object keyed by sample ID")
+    for (entry in value)
+      if (!is.list(entry) || is.null(names(entry)) ||
+          !all(names(entry) %in% qc_metric_names)) stop_bad("Invalid sample override")
+  }
   overrides <- if (!is.null(sample)) cfg$sample_overrides[[sample]] else NULL
   if (!is.null(overrides) && !all(names(overrides) %in% qc_metric_names))
     stop_bad("Unknown override metric for ", sample)
@@ -223,7 +232,7 @@ read_stage_objects <- function(files, assay) {
   if (anyDuplicated(ids)) stop_bad("Duplicate sample ID")
   if (anyDuplicated(unlist(lapply(items, colnames)))) stop_bad("Duplicate cell ID")
   names(items) <- ids
-  items
+  items[order(ids)]
 }
 cluster_qc_reduction <- function(obj, reduction, dims, umap_dims, prefix, settings) {
   if (ncol(Embeddings(obj, reduction)) < max(c(dims, umap_dims)))

@@ -5,9 +5,14 @@ args <- commandArgs(trailingOnly = TRUE)
   stopifnot(length(args) == 4L)
   sample <- args[1]; obj <- readRDS(args[2]); dir <- args[3]; outfile <- args[4]
   m <- ReadMGATK(dir)
-  if (!"A" %in% m$refallele$ref[m$refallele$pos == 5019])
+  ref <- m$refallele$ref[m$refallele$pos == 5019]
+  if (length(ref) != 1L || is.na(ref) || ref != "A")
     stop_bad("mgatk reference allele at m.5019 is not A: ", sample)
-  bcs <- obj$barcode
+  bcs <- as.character(obj$barcode)
+  if (length(bcs) != ncol(obj) || anyNA(bcs) || anyDuplicated(bcs))
+    stop_bad("Missing or duplicated original barcodes: ", sample)
+  if (anyDuplicated(colnames(m$counts)) || anyDuplicated(rownames(m$depth)))
+    stop_bad("Duplicated mgatk barcodes: ", sample)
   if (!any(bcs %in% colnames(m$counts)))
     stop_bad("No shared barcodes between mgatk and Seurat: ", sample)
   base_counts <- function(base, strand) {
@@ -27,7 +32,8 @@ args <- commandArgs(trailingOnly = TRUE)
   site_depth <- A + G + C_f + C_r + T_f + T_r
   informative <- A + G
   hf <- ifelse(informative > 0, G / informative, NA_real_)
-  depth <- m$depth[bcs, 1]
+  depth <- m$depth[match(bcs, rownames(m$depth)), 1]
+  depth[!bcs %in% colnames(m$counts)] <- NA_real_
   out <- data.frame(cell_id = colnames(obj), sample_id = sample,
     barcode = bcs, mtDNA_depth = as.numeric(depth),
     depth_5019 = site_depth, informative_depth_5019 = informative,
