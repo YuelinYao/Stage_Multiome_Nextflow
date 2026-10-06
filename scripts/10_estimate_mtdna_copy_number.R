@@ -3,7 +3,7 @@
 #
 # Formula: estimated copies = nuclear ploidy * mean mtDNA depth / mean nuclear depth.
 # This is an assay-dependent estimate, not an independently calibrated molecule count.
-# The script is standalone: it is NOT automatically run by main.nf.
+# main.nf runs this per sample after step 09; it can also run directly.
 # Run with --help for arguments. All BED files use 0-based, end-exclusive coordinates.
 # Required R packages are listed in environment.yml. Signac is needed only
 # when selecting bins with its default blacklist; a custom BED avoids that dependency.
@@ -174,12 +174,14 @@ read_mgatk_depth <- function(directory, cells, lookup) {
 main <- function(args) {
   help <- paste(
     "Usage: Rscript scripts/10_estimate_mtdna_copy_number.R --sample ID",
-    "  --bam ARC/outs/atac_possorted_bam.bam --barcodes retained_barcodes.txt",
+    "  --bam ARC/outs/atac_possorted_bam.bam",
+    "  (--barcodes retained_barcodes.txt OR --metrics-tsv sample.mtDNA.tsv)",
     "  --mgatk-dir MGATK/final --mgatk-enriched-dir MGATK_ENRICHED/final",
     "  --out-prefix results/ID (provide either or both mgatk directories)",
     "  (--reference-bed shared_reference.bed OR",
     "   --fragments ARC/outs/atac_fragments.tsv.gz)",
-    "Optional: --barcode-map ARC/outs/per_barcode_metrics.csv",
+    "Optional: --json pipeline_settings.json (copy_number settings)",
+    "  --barcode-map ARC/outs/per_barcode_metrics.csv",
     "  --blacklist mm10-blacklist.bed (default: Signac::blacklist_mm10)",
     "  --bin-size 500 --quantile 0.985 --mapq 30 --baseq 20",
     "  --ploidy 2 --min-nuclear-bases 1000 --min-mt-depth 10",
@@ -194,10 +196,37 @@ main <- function(args) {
   defaults <- list("bin-size" = "500", quantile = "0.985", mapq = "30", baseq = "20",
     ploidy = "2", "min-nuclear-bases" = "1000", "min-mt-depth" = "10", "keep-duplicates" = "false")
   allowed <- c(names(defaults), "sample", "bam", "barcodes", "mgatk-dir", "mgatk-enriched-dir", "out-prefix",
-               "reference-bed", "fragments", "blacklist", "barcode-map")
+               "reference-bed", "fragments", "blacklist", "barcode-map", "metrics-tsv", "json")
   if (any(!keys %in% allowed)) fail("Unknown argument: ", paste(setdiff(keys, allowed), collapse = ", "))
+  # JSON supplies analysis settings; explicit script arguments take precedence.
+  if (!is.null(opts$json)) {
+    settings <- jsonlite::fromJSON(opts$json, simplifyVector = FALSE)
+    supplied <- settings$copy_number
+    if (!is.null(supplied)) {
+      fields <- c("bin_size", "quantile", "mapq", "baseq", "ploidy",
+        "min_nuclear_bases", "min_mt_depth", "keep_duplicates", "reference_bed", "blacklist")
+      if (!is.list(supplied) || (length(supplied) &&
+          (is.null(names(supplied)) || anyDuplicated(names(supplied)))) ||
+          any(!names(supplied) %in% fields)) fail("Invalid copy_number JSON settings")
+      for (field in names(supplied)) {
+        value <- supplied[[field]]
+        if (is.null(value)) next
+        key <- gsub("_", "-", field, fixed = TRUE)
+        if (field == "keep_duplicates") {
+          if (length(value) != 1L || !is.logical(value) || is.na(value)) fail("Invalid copy_number.", field)
+          value <- if (value) "true" else "false"
+        } else if (field %in% c("reference_bed", "blacklist")) {
+          if (length(value) != 1L || !is.character(value) || is.na(value) || !startsWith(value, "/"))
+            fail("Invalid copy_number.", field)
+        } else if (length(value) != 1L || !is.numeric(value) || !is.finite(value)) {
+          fail("Invalid copy_number.", field)
+        }
+        if (is.null(opts[[key]])) opts[[key]] <- as.character(value)
+      }
+    }
+  }
   for (key in names(defaults)) if (is.null(opts[[key]])) opts[[key]] <- defaults[[key]]
-  for (key in c("sample", "bam", "barcodes", "out-prefix"))
+  for (key in c("sample", "bam", "out-prefix"))
     if (is.null(opts[[key]]) || !nzchar(opts[[key]])) fail("Required: --", key)
   source_keys <- c(mgatk = "mgatk-dir", enriched = "mgatk-enriched-dir")
   source_keys <- source_keys[vapply(source_keys, function(key) !is.null(opts[[key]]), logical(1))]
@@ -213,8 +242,17 @@ main <- function(args) {
   if (!opts[["keep-duplicates"]] %in% c("true", "false")) fail("Invalid --keep-duplicates")
   for (pkg in c("Rsamtools", "GenomicRanges", "GenomicAlignments"))
     if (!requireNamespace(pkg, quietly = TRUE)) fail("Missing R package: ", pkg)
-  cells <- readLines(opts$barcodes, warn = FALSE)
-  if (!length(cells) || any(!nzchar(cells)) || anyDuplicated(cells)) fail("Empty/duplicate barcode list")
+  if (sum(!vapply(opts[c("barcodes", "metrics-tsv")], is.null, logical(1))) != 1L)
+    fail("Provide exactly one of --barcodes and --metrics-tsv")
+  cells <- if (!is.null(opts[["metrics-tsv"]])) {
+    metrics <- read.delim(opts[["metrics-tsv"]], check.names = FALSE,
+      colClasses = c(sample_id = "character", barcode = "character"))
+    if (!all(c("sample_id", "barcode") %in% names(metrics)) || anyDuplicated(names(metrics)) ||
+        !nrow(metrics) || anyNA(metrics$sample_id) || any(metrics$sample_id != opts$sample))
+      fail("Invalid sample/columns in --metrics-tsv")
+    metrics$barcode
+  } else readLines(opts$barcodes, warn = FALSE)
+  if (!length(cells) || anyNA(cells) || any(!nzchar(cells)) || anyDuplicated(cells)) fail("Empty/duplicate barcode list")
   lengths <- Rsamtools::scanBamHeader(opts$bam)[[1]]$targets
   # Direct CB matching is preferred. If CB contains ATAC-library barcodes, the
   # ARC metrics table supplies the explicit ATAC->canonical barcode translation.
@@ -269,6 +307,14 @@ main <- function(args) {
     nuclear_reference_bp = reference_bp, nuclear_aligned_bases = unname(measured$bases),
     nuclear_reads_with_counted_bases = unname(measured$reads), nuclear_mean_depth = nuclear_depth,
     assumed_nuclear_ploidy = opts$ploidy)
+  # Always expose both requested metadata names, including when the ordinary
+  # source has not been supplied yet. Missing sources must never become zero.
+  for (suffix in c("", "_enriched")) {
+    out[[paste0("mitochondrial_mean_depth", suffix)]] <- NA_real_
+    out[[paste0("mtDNA_CN_normalised", suffix, "_raw")]] <- NA_real_
+    out[[paste0("mtDNA_CN_normalised", suffix)]] <- NA_real_
+    out[[paste0("qc_status", suffix)]] <- "missing_mgatk_source"
+  }
   for (source in names(depths)) {
     mt_depth <- depths[[source]]$depth
     estimate <- ifelse(nuclear_depth > 0, opts$ploidy * mt_depth / nuclear_depth, NA_real_)

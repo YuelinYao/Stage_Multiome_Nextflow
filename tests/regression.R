@@ -49,6 +49,16 @@ stopifnot(identical(separate$review_QC_cluster$RNA_dims, 1:12),
           separate$RNA_processing$algorithm == 3,
           separate$ATAC_processing$algorithm == 4,
           separate$WNN$algorithm == 1)
+for (field in c("bin_size", "quantile", "mapq", "baseq", "ploidy", "min_nuclear_bases", "min_mt_depth")) {
+  bad <- cfg; bad$copy_number[[field]] <- -1
+  expect_error(env$read_pipeline_config(write_config(bad)))
+}
+for (settings in list(list(quantile = 1), list(bin_size = 0), list(ploidy = 0),
+                      list(keep_duplicates = "false"), list(reference_bed = "relative.bed"),
+                      list(unknown = 1), list(mapq = 1.5))) {
+  bad <- cfg; bad$copy_number <- settings
+  expect_error(env$read_pipeline_config(write_config(bad)))
+}
 bad <- independent; bad$ATAC_processing$ATAC_integrate_dims <- "1:40"
 expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$ATAC_processing$ATAC_integrate_dims <- "2:40"

@@ -64,6 +64,18 @@
     "integrate_atac": true,
     "min_cutoff": "q5"
   },
+  "copy_number": {
+    "bin_size": 500,
+    "quantile": 0.985,
+    "mapq": 30,
+    "baseq": 20,
+    "ploidy": 2,
+    "min_nuclear_bases": 1000,
+    "min_mt_depth": 10,
+    "keep_duplicates": false,
+    "reference_bed": null,
+    "blacklist": null
+  },
   "WNN": {
     "RNA_dims": "1:20",
     "ATAC_dims": "2:40",

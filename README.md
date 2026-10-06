@@ -1,6 +1,6 @@
 # Per-stage m.5019A>G Multiome workflow
 
-This Nextflow workflow analyses one mouse developmental stage at a time (mm10). It calls peaks from each sample's ATAC fragments, creates one common peak set for the stage, reviews eight RNA/ATAC QC metrics, removes reviewed low-quality clusters and RNA doublets per sample, preprocesses and integrates RNA and ATAC, builds WNN clusters, attaches precomputed mgatk results, and identifies RNA markers for each WNN cluster.
+This Nextflow workflow analyses one mouse developmental stage at a time (mm10). It calls peaks from each sample's ATAC fragments, creates one common peak set for the stage, reviews eight RNA/ATAC QC metrics, removes reviewed low-quality clusters and RNA doublets per sample, preprocesses and integrates RNA and ATAC, estimates mtDNA copy number, builds WNN clusters, attaches heteroplasmy and copy-number metadata, and identifies RNA markers for each WNN cluster.
 
 ## Requirements and inputs
 
@@ -43,11 +43,11 @@ Sample IDs must be unique within each stage, start with a letter or number, and 
 
 | Input | Required content |
 |---|---|
-| `arc_out` | Cell Ranger ARC `outs` directory containing `filtered_feature_bc_matrix.h5`, `atac_fragments.tsv.gz` and its `.tbi` index; analysis also requires `summary.csv` for detected-cell reporting |
+| `arc_out` | Cell Ranger ARC `outs` directory containing `filtered_feature_bc_matrix.h5`, `atac_fragments.tsv.gz` and its `.tbi` index; analysis also requires `summary.csv` for detected-cell reporting and `atac_possorted_bam.bam` for step 10; `per_barcode_metrics.csv` supplies barcode translation when present |
 | `mgatk_enriched_dir` | Required mgatk output used for step 09 heteroplasmy/depth metrics, readable by `Signac::ReadMGATK`, usually the `final` directory |
-| `mgatk_dir` | Additional mgatk output for standalone step 10 ordinary-mgatk copy-number estimation; may be blank. Nextflow does not read this directory directly |
+| `mgatk_dir` | Ordinary mgatk output used automatically by step 10 for `mtDNA_CN_normalised`; may be blank, in which case this estimate remains `NA` |
 
-Step 09 mitochondrial measurements use `mgatk_enriched_dir`. Standalone step 10 can additionally use `mgatk_dir` for ordinary-mgatk copy-number estimates; supply its two paths explicitly, then import the resulting tables in step 13. The existing paths in `examples/samples.csv` have been moved into that column; fill in `mgatk_dir` when your additional dataset is ready. The chosen enriched output may have any directory name, including a WT directory without an `_enriched` suffix. The workflow retains both sources in its sample records for future analysis branches.
+Step 09 heteroplasmy/depth measurements use `mgatk_enriched_dir`. During analysis, step 10 uses both CSV directories and step 13 attaches its results automatically. Supply `mgatk_dir` to calculate the ordinary-mgatk estimate as well. The existing paths in `examples/samples.csv` have been moved into that column; fill in `mgatk_dir` when your additional dataset is ready. The chosen enriched output may have any directory name, including a WT directory without an `_enriched` suffix. Both sources are matched to the retained singlet barcodes.
 
 Gene symbols, the reference genome and barcodes are requirements for the existing data, not additional files or CSV columns:
 
@@ -129,6 +129,7 @@ Section and parameter names are case-sensitive. Unknown sections, duplicate keys
 | `doublet` | `PC_dims`, `algorithm`, `resolution`, `exclude_clusters`; optional `expected_rate`, `sample_rates` | `06_qc_doubletfinder.R` |
 | `RNA_processing` | `RNA_dims`, `RNA_umap_dims`, `algorithm`, `resolution`, `integrate_rna` | `07_preprocess_rna.R` |
 | `ATAC_processing` | `ATAC_dims`, `ATAC_integrate_dims`, `algorithm`, `resolution`, `integrate_atac`, `min_cutoff` | `08_preprocess_atac.R` |
+| `copy_number` | `bin_size`, `quantile`, `mapq`, `baseq`, `ploidy`, `min_nuclear_bases`, `min_mt_depth`, `keep_duplicates`, `reference_bed`, `blacklist` | `10_estimate_mtdna_copy_number.R` |
 | `WNN` | `RNA_dims`, `ATAC_dims`, `algorithm`, `resolution` | `12_wnn_stage.R` |
 
 `scripts/00_common.R` reads and validates these sections and supplies the shared QC/clustering helpers. Additionally, `07_preprocess_rna.R` reads `WNN.RNA_dims` and `08_preprocess_atac.R` reads `WNN.ATAC_dims` to compute enough components for WNN. `12_wnn_stage.R` reads `RNA_processing.integrate_rna` and `ATAC_processing.integrate_atac` to select integrated or unintegrated reductions. Each step's clustering algorithm and resolution come only from its own section.
@@ -217,7 +218,26 @@ By default, the expected rate is estimated from ARC's detected-cell count using 
 }
 ```
 
-**8. `WNN`: combined RNA/ATAC analysis in 12.** Its own `RNA_dims` and `ATAC_dims` select components for multimodal neighbours; its algorithm and resolution control final `wsnn` clusters. WNN uses integrated reductions when the respective RNA/ATAC integration switch is enabled. RNA and ATAC preprocessing compute enough components for these independent WNN ranges.
+**8. `copy_number`: per-sample mtDNA copy-number estimation in 10.** `bin_size` and `quantile` control nuclear reference selection; `mapq`, `baseq` and `keep_duplicates` control BAM counting. `ploidy` supplies the nuclear copy-number assumption. `min_nuclear_bases` and `min_mt_depth` flag low coverage. These defaults are starting settings; match the counting filters to your mgatk runs.
+
+```json
+"copy_number": {
+  "bin_size": 500,
+  "quantile": 0.985,
+  "mapq": 30,
+  "baseq": 20,
+  "ploidy": 2,
+  "min_nuclear_bases": 1000,
+  "min_mt_depth": 10,
+  "keep_duplicates": false,
+  "reference_bed": null,
+  "blacklist": null
+}
+```
+
+With `reference_bed: null`, each sample selects nuclear intervals from its ARC fragments. Set `reference_bed` to an absolute shared BED path to use the same intervals for every sample. `blacklist: null` uses Signac's bundled mm10 blacklist during reference selection; an absolute BED path overrides it. A supplied reference BED is used as-is and must already exclude blacklist regions. Omitted settings use the defaults above.
+
+**9. `WNN`: combined RNA/ATAC analysis in 12.** Its own `RNA_dims` and `ATAC_dims` select components for multimodal neighbours; its algorithm and resolution control final `wsnn` clusters. WNN uses integrated reductions when the respective RNA/ATAC integration switch is enabled. RNA and ATAC preprocessing compute enough components for these independent WNN ranges.
 
 ```json
 "WNN": {
@@ -259,6 +279,10 @@ stage_results/
     │       └── <sample>_Doublet.pdf
     ├── mgatk/
     │   └── <sample>.mtDNA.tsv
+    ├── copy_number/
+    │   ├── <sample>.mtDNA_copy_number.tsv
+    │   ├── <sample>.nuclear_reference.bed
+    │   └── <sample>.settings.txt
     ├── objects/
     │   ├── rna_unintegrated.rds
     │   ├── rna_integrated.rds         # only when integrate_rna = true
@@ -282,14 +306,15 @@ stage_results/
 | `qc/filtered/<sample>.qc.tsv` | One summary row per sample: initial, QC-passing, cluster-retained and singlet cell counts, plus DoubletFinder settings/results |
 | `qc/filtered/<sample>_Doublet.pdf` | RNA UMAP showing singlet/doublet classifications before doublet removal |
 | `mgatk/<sample>.mtDNA.tsv` | Per-cell mitochondrial depth, counts and individual/pooled 5019-panel heteroplasmy for retained singlets |
+| `copy_number/` | Step 10 per-cell estimates, selected nuclear BED and settings/provenance for each sample |
 | `objects/rna_*.rds`, `objects/atac_*.rds` | Stage Seurat objects before/after integration; WNN reads the integrated file when its integration switch is enabled, otherwise the unintegrated file |
 | `objects/rna_cell_annotations.tsv` | Per-cell sample ID, cell-cycle scores/phase and sex prediction |
 | `objects/wnn.rds` | Combined RNA/ATAC object with modality reductions, WNN UMAP, modality weights and WNN clusters |
-| `objects/wnn_mgatk.rds` | Final combined object, including heteroplasmy and optionally imported copy-number estimates in cell metadata; use this for further analysis |
+| `objects/wnn_mgatk.rds` | Final combined object, including heteroplasmy and copy-number estimates in cell metadata; use this for further analysis |
 | `objects/all_cells_mtDNA.tsv` | All samples' mitochondrial measurements, ordered to match the final WNN object's cells |
 | `deg/cluster_markers.tsv` | Positive RNA markers for WNN clusters, filtered to finite adjusted p-values below 0.05 |
 
-The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled. Each distinct RNA/ATAC analysis object is saved once; WNN uses `rna_integrated.rds` or `rna_unintegrated.rds` and `atac_integrated.rds` or `atac_unintegrated.rds` according to those switches.
+The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `copy_number/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled. Each distinct RNA/ATAC analysis object is saved once; WNN uses `rna_integrated.rds` or `rna_unintegrated.rds` and `atac_integrated.rds` or `atac_unintegrated.rds` according to those switches.
 
 The per-sample `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints remain in the `QC_FILTER_DOUBLET` task directory under Nextflow's `work/` directory; they are not copied into the published results. Task logs (`.command.log`, `.command.err`, `.command.out`) are also under `work/`, while `.nextflow.log` is in the launch directory. Keep `work/` and `.nextflow/` when resuming runs. ATAC-containing RDS objects refer to the original fragment files, so those shared input paths must remain accessible when using fragment-based Signac functions later.
 
@@ -424,7 +449,7 @@ Output: `STAGE/mgatk/<sample>.mtDNA.tsv`. For each position, `Depth_<position>` 
 
 ### Step 10: estimate mtDNA copy number from mgatk and ARC
 
-`scripts/10_estimate_mtdna_copy_number.R` is a standalone, commented script; it is not invoked by `main.nf`. It estimates mtDNA copies as `ploidy × mitochondrial mean depth / nuclear mean depth`, with a default nuclear ploidy of 2. It reads genome-wide mitochondrial depth from mgatk's `*.depthTable.txt` and measures nuclear sequenced-base coverage from the ARC ATAC BAM. It does not use heteroplasmy or coverage at m.5019 as a copy-number measurement. See the [mgatk output definitions](https://github.com/caleblareau/mgatk/wiki/Outputs).
+`scripts/10_estimate_mtdna_copy_number.R` runs automatically per sample during `--phase analysis`, after step 09. It reads the retained singlet barcodes from step 09's metric table, both mgatk directories from the sample CSV, and `copy_number` settings from the pipeline JSON. Its results pass directly to step 13; no barcode export or `--copy_number_dir` argument is needed for the normal workflow. It estimates mtDNA copies as `ploidy × mitochondrial mean depth / nuclear mean depth`, with a default nuclear ploidy of 2. It reads genome-wide mitochondrial depth from mgatk's `*.depthTable.txt` and measures nuclear sequenced-base coverage from the ARC ATAC BAM. It does not use heteroplasmy or coverage at m.5019 as a copy-number measurement. See the [mgatk output definitions](https://github.com/caleblareau/mgatk/wiki/Outputs).
 
 When both directories are supplied, the script scans the nuclear BAM once and reports two per-cell estimates using the same nuclear reference and coverage:
 
@@ -435,14 +460,14 @@ When both directories are supplied, the script scans the nuclear BAM once and re
 
 Here “normalised” means divided by nuclear mean depth; there is no additional sample-median scaling. Each source is matched independently by barcode. Enrichment affects mitochondrial recovery, so paired estimates can differ even for the same cells.
 
-First export original barcodes for one sample from its published mgatk metrics table:
+For an optional direct run outside Nextflow, export original barcodes for one sample from its published mgatk metrics table:
 
 ```r
 metrics <- read.delim("/path/to/stage_results/E8.5/mgatk/5019_Hi_1.mtDNA.tsv")
 writeLines(as.character(metrics$barcode), "5019_Hi_1.barcodes.txt")
 ```
 
-Then run in the existing R environment:
+Then run directly in the existing R environment (the workflow already performs this step):
 
 ```bash
 conda run -p /suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome \
@@ -458,15 +483,15 @@ conda run -p /suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome \
   --out-prefix /path/to/copy_number/5019_Hi_1
 ```
 
-`--barcode-map` is optional when fragment barcodes, BAM CB tags and mgatk identifiers already match the original ARC barcodes. Otherwise it translates `atac_barcode` to the canonical `barcode` using ARC's metrics table, for fragment-reference selection, BAM coverage and mgatk depth matching. Mappings for retained cells must be nonempty and one-to-one. Inputs are for one sample per invocation. The BAM must have a valid reference header; chromosome lengths are read from it. Use an unaggregated BAM from the same ATAC library used for mgatk. Step 10 is standalone: supply `--mgatk-dir` with the ordinary mgatk output and `--mgatk-enriched-dir` with the enriched output (corresponding to `mgatk_dir` and `mgatk_enriched_dir` in your sample CSV). It does not read the CSV automatically. You may supply either directory alone, or both to calculate paired estimates. Required packages are Rsamtools, GenomicRanges, GenomicAlignments and their dependencies, already listed in `environment.yml`.
+`--barcode-map` is optional when fragment barcodes, BAM CB tags and mgatk identifiers already match the original ARC barcodes. Otherwise it translates `atac_barcode` to the canonical `barcode` using ARC's metrics table, for fragment-reference selection, BAM coverage and mgatk depth matching. Mappings for retained cells must be nonempty and one-to-one. Inputs are for one sample per invocation. The BAM must have a valid reference header; chromosome lengths are read from it. Use an unaggregated BAM from the same ATAC library used for mgatk. Nextflow supplies `mgatk_dir` and `mgatk_enriched_dir` from the CSV as `--mgatk-dir` and `--mgatk-enriched-dir`. It supplies the singlet table with `--metrics-tsv` and uses ARC's `per_barcode_metrics.csv` automatically when present. For a direct run, use either `--barcodes` or `--metrics-tsv` and optionally `--json` for the same settings. If a mitochondrial source is omitted, its estimate is `NA` and its QC status is `missing_mgatk_source`. Required packages are Rsamtools, GenomicRanges, GenomicAlignments and their dependencies, already listed in `environment.yml`.
 
 When using `--fragments`, the script loads [`Signac::blacklist_mm10`](https://stuartlab.org/signac/reference/blacklist_mm10) directly by default; no separate blacklist download or BED export is needed. To use your own BED instead, add `--blacklist /absolute/path/mm10-blacklist.bed`. Signac is required only for the default blacklist route. Current Signac documentation marks the bundled dataset as deprecated, so a future release without it requires the explicit BED option. The blacklist source is recorded in `.settings.txt`.
 
 The script streams fragments, scores their endpoints in 500 bp bins on chr1–chr19, excludes bins overlapping the mm10 blacklist, and selects scores strictly above the 98.5th percentile. It excludes sex chromosomes and mitochondria from the nuclear reference. It ignores fragment readSupport (PCR duplicate multiplicity). Reference selection can be adjusted with `--bin-size` and `--quantile`; zero-score eligible bins participate in the percentile. It uses no neighbouring-bin expansion. BAM coverage includes only A/C/G/T bases passing quality filters inside the exact selected regions, respecting insertions, deletions and soft clipping. Both mates contribute separately if they overlap. The BAM is scanned in chunks; per-read R counting can take substantial time on a full library, so start with a small pilot.
 
-For comparisons across samples, use a fixed, representative nuclear reference set. Supply it with `--reference-bed /path/to/shared_reference.bed` instead of `--fragments`. In this mode Signac is not loaded and the BED is used as supplied; it must already exclude blacklisted regions and contain only mouse autosomes. The script reduces overlapping intervals so reference length and coverage are not counted twice. A reference selected from one sample may favour that sample's cell composition; assess accessibility stability across the cell types and samples being compared.
+For comparisons across samples, use a fixed, representative nuclear reference set. Set `copy_number.reference_bed` to its absolute path in the pipeline JSON, or supply `--reference-bed /path/to/shared_reference.bed` in a direct run. In this mode Signac is not loaded and the BED is used as supplied; it must already exclude blacklisted regions and contain only mouse autosomes. The script reduces overlapping intervals so reference length and coverage are not counted twice. A reference selected from one sample may favour that sample's cell composition; assess accessibility stability across the cell types and samples being compared.
 
-Outputs for each prefix:
+Nextflow publishes the following under `<outdir>/<stage>/copy_number/`, using the sample ID as the prefix:
 
 | File | Content |
 |---|---|
@@ -492,13 +517,13 @@ Output: `STAGE/objects/wnn.rds`, including `wnn.umap` and `wsnn_clusters`. The o
 
 `13_add_mgatk.R` combines sample metric tables with the same columns, preserves sample IDs literally (including numeric-looking labels such as `001`), rejects missing/duplicated/mismatched identifiers, orders measurements to the WNN cell order, and attaches all measured mtDNA fields, including strand-specific heteroplasmy.
 
-To attach step 10 copy-number estimates as well, save one `<sample_id>.mtDNA_copy_number.tsv` per selected sample in a directory, then add this argument to your analysis command:
+Step 13 receives step 10 outputs automatically. To reuse precomputed estimates and skip running step 10, optionally supply a directory containing one `<sample_id>.mtDNA_copy_number.tsv` per selected sample:
 
 ```bash
 --copy_number_dir /absolute/path/to/copy_number
 ```
 
-Step 13 matches these tables using **sample ID and original barcode**, then adds `mtDNA_CN_normalised` and `mtDNA_CN_normalised_enriched` to the final object's cell metadata alongside `Heteroplasmy_5019`, `Heteroplasmy_15200`, `Heteroplasmy_16232` and `Heteroplasmy_all_5019`. It also imports the raw estimates and coverage fields supplied by step 10. Copy-number QC statuses become `mtDNA_CN_qc_status` and `mtDNA_CN_qc_status_enriched`; `mtDNA_CN_matched` records whether a cell has a row in a supplied copy-number table. Cells without a row or a measurement retain `NA`. Duplicate sample/barcode pairs, unknown cells and invalid estimates fail explicitly. Tables may contain one or both mitochondrial sources. Omitting `--copy_number_dir` keeps the heteroplasmy-only attachment route; step 10 remains standalone.
+Step 13 matches these tables using **sample ID and original barcode**, then adds `mtDNA_CN_normalised` and `mtDNA_CN_normalised_enriched` to the final object's cell metadata alongside `Heteroplasmy_5019`, `Heteroplasmy_15200`, `Heteroplasmy_16232` and `Heteroplasmy_all_5019`. It also imports the raw estimates and coverage fields supplied by step 10. Copy-number QC statuses become `mtDNA_CN_qc_status` and `mtDNA_CN_qc_status_enriched`; `mtDNA_CN_matched` records whether a cell has a row in a supplied copy-number table. Cells without a row or a measurement retain `NA`. Duplicate sample/barcode pairs, unknown cells and invalid estimates fail explicitly. Tables may contain one or both mitochondrial sources. By default, Nextflow runs step 10 and attaches its output. `--copy_number_dir` is an optional override for reusing precomputed tables.
 
 You can also run step 13 directly with already generated tables:
 
@@ -532,7 +557,7 @@ Run `Rscript tests/atac_integration.R` to check stage dimension handling, recipr
 
 `main.nf` wires every active script and stages files between tasks. `nextflow.config` supplies local/Conda/Slurm execution settings. `scripts/00_common.R` contains shared import, QC, validation, clustering, scoring and annotation helpers; it is not a standalone process. `examples/` contains the manifest and illustrative JSON.
 
-RNA and ATAC stage processing can run concurrently, while mgatk extraction runs per sample. WNN waits for both stage objects; step 13 attachment waits for WNN, all mgatk tables and any supplied copy-number tables; marker detection waits for the annotated final object. The stage RNA/ATAC tasks each request 96 GB; adjust process resources in a site config if needed.
+RNA and ATAC stage processing can run concurrently, while mgatk extraction and subsequent copy-number estimation run per sample. WNN waits for both stage objects; step 13 attachment waits for WNN, all mgatk tables and any supplied copy-number tables; marker detection waits for the annotated final object. The stage RNA/ATAC tasks each request 96 GB, and step 10 requests 1 CPU, 24 GB and 48 hours per sample; adjust process resources in a site config if needed.
 
 Run the dependency-light regression checks with `Rscript tests/regression.R`. `Rscript tests/mgatk_metrics.R` checks the three 5019-associated sites, pooled 5019 fractions, zero/missing coverage, shuffled sparse-matrix rows and barcode order, invalid inputs, and step 13 heteroplasmy/copy-number metadata attachment (including reused barcodes across samples) using synthetic counts and real Seurat; mgatk file parsing is mocked. `Rscript tests/doubletfinder_stage.R` verifies independent DoubletFinder settings and outputs with real Seurat preprocessing and mocked DoubletFinder calls; `Rscript tests/wnn_settings.R` verifies independent WNN dimensions, clustering settings and reduction selection using synthetic Seurat objects. The regression checks parse all R scripts from 00 through 14 and exercise configuration validation, inclusive QC boundaries, non-finite QC rejection, and missing mgatk barcode handling using synthetic data. They do not exercise the full scientific analysis. This workspace has Java 8 and lacks Signac, DoubletFinder and cellXY, so full workflow execution requires the production environment and a small real stage.
 

@@ -110,9 +110,36 @@ read_pipeline_config <- function(file, sample = NULL) {
   }
   named_object(cfg, "Pipeline JSON")
   allowed <- c("peaks", "note", "thresholds", "sample_overrides", "review_QC_cluster",
-               "doublet", "RNA_processing", "ATAC_processing", "WNN", "clustering")
+               "doublet", "RNA_processing", "ATAC_processing", "WNN", "copy_number", "clustering")
   unknown <- setdiff(names(cfg), allowed)
   if (length(unknown)) stop_bad("Unknown pipeline JSON sections: ", paste(unknown, collapse = ", "))
+  # Step 10 uses these settings independently; reject mistakes before sample QC.
+  copy_settings <- cfg$copy_number
+  if (!is.null(copy_settings)) {
+    named_object(copy_settings, "copy_number")
+    numeric_fields <- c("bin_size", "quantile", "mapq", "baseq", "ploidy",
+                        "min_nuclear_bases", "min_mt_depth")
+    if (any(!names(copy_settings) %in% c(numeric_fields, "keep_duplicates", "reference_bed", "blacklist")))
+      stop_bad("Unknown copy_number settings")
+    for (field in names(copy_settings)) {
+      value <- copy_settings[[field]]
+      if (is.null(value)) next
+      if (field %in% numeric_fields) {
+        if (length(value) != 1L || !is.numeric(value) || !is.finite(value) || value < 0)
+          stop_bad("Invalid copy_number.", field)
+        if (field %in% c("bin_size", "mapq", "baseq", "min_nuclear_bases") && value != floor(value))
+          stop_bad("copy_number.", field, " must be an integer")
+        if ((field == "quantile" && value >= 1) ||
+            (field == "bin_size" && value < 1) || (field == "ploidy" && value <= 0))
+          stop_bad("Invalid copy_number.", field)
+      } else if (field == "keep_duplicates") {
+        if (length(value) != 1L || !is.logical(value) || is.na(value))
+          stop_bad("copy_number.keep_duplicates must be true or false")
+      } else if (length(value) != 1L || !is.character(value) || is.na(value) || !startsWith(value, "/")) {
+        stop_bad("copy_number.", field, " must be an absolute path or null")
+      }
+    }
+  }
   peaks <- cfg$peaks
   if (is.null(peaks)) peaks <- list()
   named_object(peaks, "peaks")

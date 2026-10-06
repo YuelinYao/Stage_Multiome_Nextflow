@@ -33,7 +33,7 @@ if (params.json) {
   def settings = new groovy.json.JsonSlurper().parse(file(params.json).toFile())
   if (!(settings instanceof Map)) error 'Pipeline JSON must be an object'
   def unknownSettings = settings.keySet() - ['peaks', 'note', 'thresholds', 'sample_overrides',
-    'review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'clustering']
+    'review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'copy_number', 'clustering']
   if (unknownSettings) error "Unknown pipeline JSON sections: ${unknownSettings.join(', ')}"
   pipelineSettings = settings
   if (settings.peaks != null) {
@@ -204,11 +204,34 @@ process MGATK_METRICS {
   input:
   tuple val(id), val(mgatk_enriched), path(qc)
   output:
-  path "${id}.mtDNA.tsv"
+  tuple val(id), path("${id}.mtDNA.tsv")
   script:
   """
   # R source checksum: ${scriptsHash}
   Rscript ${shellQuote(projectDir.toString() + "/scripts/09_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(mgatk_enriched)} '${id}.mtDNA.tsv'
+  """
+}
+
+// Step 10 follows per-sample mgatk extraction, using exactly its singlet cells.
+process MTDNA_COPY_NUMBER {
+  tag "$id"
+  cpus 1
+  memory '24 GB'
+  time '48h'
+  publishDir "${params.outdir}/${params.stage}/copy_number", mode: 'copy'
+  input:
+  tuple val(id), val(arc), val(enriched), val(original), path(metrics), path(json)
+  output:
+  tuple val(id), path("${id}.mtDNA_copy_number.tsv"), emit: metrics
+  tuple val(id), path("${id}.nuclear_reference.bed"), emit: reference
+  tuple val(id), path("${id}.settings.txt"), emit: settings
+  script:
+  def ordinaryArg = original ? "--mgatk-dir " + shellQuote(original) : ''
+  def mapFile = "${arc}/per_barcode_metrics.csv"
+  def mapArg = file(mapFile).exists() ? "--barcode-map " + shellQuote(mapFile) : ''
+  """
+  # R source checksum: ${scriptsHash}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/10_estimate_mtdna_copy_number.R")} --sample ${shellQuote(id)} --bam ${shellQuote(arc + "/atac_possorted_bam.bam")} --fragments ${shellQuote(arc + "/atac_fragments.tsv.gz")} --metrics-tsv ${shellQuote(metrics)} --mgatk-enriched-dir ${shellQuote(enriched)} ${ordinaryArg} ${mapArg} --json ${shellQuote(json)} --out-prefix ${shellQuote(id)}
   """
 }
 
@@ -264,8 +287,7 @@ process DEG_STAGE {
 
 workflow {
   seenIds = new HashSet()
-  // Keep both mgatk sources available for future branches. Active processes
-  // below receive only the enriched source through the rows projection.
+  // Preserve both mitochondrial sources; step 09 uses enriched, step 10 uses both.
   sample_records = Channel.fromPath(params.samples, checkIfExists: true)
     .splitCsv(header: true)
     .map { row ->
@@ -284,14 +306,19 @@ workflow {
       if (!seenIds.add(id)) error "Duplicate sample_id for stage ${params.stage}: ${id}"
       def arc = file(row.arc_out.trim()).toAbsolutePath().toString()
       def enriched = file(row.mgatk_enriched_dir.trim()).toAbsolutePath().toString()
-      // The reserved source is not used yet and may be left blank. Resolve
-      // supplied paths but defer directory checks until an analysis uses them.
+      // Blank ordinary mgatk is allowed: its estimate will be NA until supplied.
       def original = row.mgatk_dir?.trim() ? file(row.mgatk_dir.trim()).toAbsolutePath().toString() : ''
       if (!file("${arc}/filtered_feature_bc_matrix.h5").exists() || !file("${arc}/atac_fragments.tsv.gz").exists())
         error "Missing ARC H5 or fragments: ${arc}"
       if (!file("${arc}/atac_fragments.tsv.gz.tbi").exists()) error "Missing fragment index: ${arc}"
       if (!java.nio.file.Files.isDirectory(file(enriched)))
         error "Missing mgatk_enriched_dir directory: ${enriched}"
+      if (params.phase == 'analysis' && !params.copy_number_dir) {
+        if (!file("${arc}/atac_possorted_bam.bam").exists())
+          error "Step 10 requires ARC atac_possorted_bam.bam: ${arc}"
+        if (original && !java.nio.file.Files.isDirectory(file(original)))
+          error "Missing mgatk_dir directory: ${original}"
+      }
       tuple(id, arc, enriched, original)
     }
     .toSortedList { a, b -> a[0] <=> b[0] }
@@ -327,11 +354,17 @@ workflow {
     atac_for_wnn = pipelineSettings.ATAC_processing?.integrate_atac == false ?
       MERGE_INTEGRATE_ATAC.out.unintegrated : MERGE_INTEGRATE_ATAC.out.integrated
     WNN_STAGE(rna_for_wnn, atac_for_wnn, json)
-    // Import already calculated step 10 results; estimation stays standalone.
-    copy_numbers = params.copy_number_dir ? rows.map { id, arc, enriched ->
-      file("${params.copy_number_dir}/${id}.mtDNA_copy_number.tsv", checkIfExists: true)
-    }.collect() : Channel.value([])
-    ADD_MGATK(WNN_STAGE.out, MGATK_METRICS.out.collect(), copy_numbers)
+    // An explicit precomputed directory remains an optional reuse route.
+    if (params.copy_number_dir) {
+      copy_numbers = rows.map { id, arc, enriched ->
+        file("${params.copy_number_dir}/${id}.mtDNA_copy_number.tsv", checkIfExists: true)
+      }.collect()
+    } else {
+      copy_inputs = sample_records.join(MGATK_METRICS.out).combine(json)
+      MTDNA_COPY_NUMBER(copy_inputs)
+      copy_numbers = MTDNA_COPY_NUMBER.out.metrics.map { id, tab -> tab }.collect()
+    }
+    ADD_MGATK(WNN_STAGE.out, MGATK_METRICS.out.map { id, tab -> tab }.collect(), copy_numbers)
     DEG_STAGE(ADD_MGATK.out[0])
   }
 }

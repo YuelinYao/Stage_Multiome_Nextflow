@@ -90,7 +90,35 @@ run_tests <- function() {
   enriched_args <- args[-c(match("--mgatk-dir", args), match("--mgatk-dir", args) + 1L)]
   enriched_only <- main(c(enriched_args, "--mgatk-enriched-dir", enriched))
   stopifnot(enriched_only$mtDNA_CN_normalised_enriched[1] == 80,
-    !"mtDNA_CN_normalised" %in% names(enriched_only))
+    all(is.na(enriched_only$mtDNA_CN_normalised)),
+    all(enriched_only$qc_status == "missing_mgatk_source"))
+  # Workflow route: barcodes come from step 09, while numerical settings and
+  # the reusable reference come from the pipeline JSON. Counting remains real.
+  metric_file <- file.path(root, 'sample.mtDNA.tsv')
+  write.table(data.frame(sample_id = 'test', barcode = c('CELL1', 'CELL2', 'CELL3')),
+    metric_file, sep = "\t", quote = FALSE, row.names = FALSE)
+  json_file <- file.path(root, 'settings.json')
+  configuration <- list(copy_number = list(reference_bed = bed, ploidy = 4,
+    min_nuclear_bases = 1, keep_duplicates = FALSE))
+  jsonlite::write_json(configuration, json_file, auto_unbox = TRUE, null = 'null')
+  workflow_args <- args[-c(match('--barcodes', args), match('--barcodes', args) + 1L,
+    match('--reference-bed', args), match('--reference-bed', args) + 1L,
+    match('--min-nuclear-bases', args), match('--min-nuclear-bases', args) + 1L)]
+  workflow_args <- c(workflow_args, '--metrics-tsv', metric_file,
+    '--mgatk-enriched-dir', enriched, '--json', json_file)
+  workflow_result <- main(workflow_args)
+  stopifnot(workflow_result$mtDNA_CN_normalised[1] == 400,
+    workflow_result$mtDNA_CN_normalised_enriched[1] == 160,
+    identical(workflow_result$barcode, c('CELL1', 'CELL2', 'CELL3')))
+  override_result <- main(c(workflow_args, '--ploidy', '2'))
+  stopifnot(override_result$mtDNA_CN_normalised[1] == 200)
+  bad_config <- configuration; bad_config$copy_number$keep_duplicates <- 'false'
+  jsonlite::write_json(bad_config, json_file, auto_unbox = TRUE)
+  stopifnot(inherits(tryCatch(main(workflow_args), error = identity), 'error'))
+  jsonlite::write_json(configuration, json_file, auto_unbox = TRUE)
+  write.table(data.frame(sample_id = 'wrong', barcode = 'CELL1'),
+    metric_file, sep = "\t", quote = FALSE, row.names = FALSE)
+  stopifnot(inherits(tryCatch(main(workflow_args), error = identity), 'error'))
   assign("nuclear_coverage", original_counter, envir = .GlobalEnv)
   # Low coverage is flagged separately from missing measurements. Raw ratios
   # are retained, while the qualified estimate is suppressed.
