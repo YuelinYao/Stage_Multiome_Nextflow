@@ -37,17 +37,18 @@ run_checks <- function() {
   bcs <- c('covered', 'missing', 'other_only', 'low')
   obj <- CreateSeuratObject(matrix(1, 2, 4,
     dimnames = list(c('gene1', 'gene2'), paste0('alias_', bcs))))
-  obj$barcode <- bcs; obj$sample_id <- 'arbitrary_alias'
+  obj$barcode <- bcs; obj$sample_id <- '001'
   input <- file.path(task_dir, 'cells.rds'); output <- file.path(task_dir, 'metrics.tsv')
   saveRDS(obj, input)
   env$ReadMGATK <- function(dir) mgatk
   expressions <- parse('scripts/06c_mgatk_metrics.R')[-(1:2)]
   run <- function() {
-    env$args <- c('arbitrary_alias', input, 'mock', output)
+    env$args <- c('001', input, 'mock', output)
     for (expr in expressions) eval(expr, env)
-    read.delim(output)
+    read.delim(output, colClasses = c(cell_id = "character", sample_id = "character", barcode = "character"))
   }
   tab <- run()
+  stopifnot(identical(tab$sample_id, rep("001", nrow(tab))))
   yy06_names <- c('mtDNA_depth', 'mtDNA_count',
     paste0('Heteroplasmy_', positions), paste0('Depth_', positions),
     'Heteroplasmy_all_5019', 'Depth_all_5019')
@@ -80,7 +81,15 @@ run_checks <- function() {
   for (expr in parse('scripts/09_add_mgatk.R')[-(1:2)]) eval(expr, env)
   attached <- readRDS(final)
   stopifnot(identical(colnames(attached), colnames(obj)),
+    identical(as.character(attached$sample_id), rep('001', ncol(obj))),
     attached$Heteroplasmy_all_5019[1] == 0.7, is.na(attached$Heteroplasmy_all_5019[2]))
+  attachment_args <- env$args
+  # Malformed tables must fail clearly instead of attaching partial metadata.
+  bad <- tab; bad$cell_id[1] <- NA_character_; env$write_tsv(bad, output)
+  expect_error(for (expr in parse('scripts/09_add_mgatk.R')[-(1:2)]) eval(expr, env))
+  bad <- tab; bad$Heteroplasmy_all_5019 <- NULL; env$write_tsv(bad, output)
+  env$args <- attachment_args
+  expect_error(for (expr in parse('scripts/09_add_mgatk.R')[-(1:2)]) eval(expr, env))
 
   original <- mgatk
   mgatk$refallele$ref[mgatk$refallele$pos == 15200] <- 'C'

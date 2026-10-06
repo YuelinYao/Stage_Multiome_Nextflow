@@ -82,8 +82,20 @@ pipeline_analysis_defaults <- function() list(
   WNN = list(RNA_dims = "1:20", ATAC_dims = "2:40", algorithm = 3L, resolution = 2))
 read_pipeline_config <- function(file, sample = NULL) {
   cfg <- jsonlite::fromJSON(file, simplifyVector = FALSE)
+  named_object <- function(value, name) {
+    if (!is.list(value) || (length(value) &&
+        (is.null(names(value)) || anyNA(names(value)) ||
+         any(!nzchar(names(value))) || anyDuplicated(names(value)))))
+      stop_bad(name, " must be an object with unique, nonempty keys")
+  }
+  named_object(cfg, "Pipeline JSON")
+  allowed <- c("peaks", "note", "thresholds", "sample_overrides", "review_QC_cluster",
+               "doublet", "RNA_processing", "ATAC_processing", "WNN", "clustering")
+  unknown <- setdiff(names(cfg), allowed)
+  if (length(unknown)) stop_bad("Unknown pipeline JSON sections: ", paste(unknown, collapse = ", "))
   peaks <- cfg$peaks
   if (is.null(peaks)) peaks <- list()
+  named_object(peaks, "peaks")
   if (!is.list(peaks) || !all(names(peaks) %in% c("peak_min", "peak_max")))
     stop_bad("Pipeline JSON peaks must contain peak_min and/or peak_max")
   if (is.null(peaks$peak_min)) peaks$peak_min <- 20
@@ -95,24 +107,28 @@ read_pipeline_config <- function(file, sample = NULL) {
   if (peaks$peak_min >= peaks$peak_max) stop_bad("peak_min must be less than peak_max")
   cfg$peaks <- peaks
   if (is.null(cfg$thresholds)) stop_bad("Pipeline JSON must have thresholds")
+  named_object(cfg$thresholds, "thresholds")
   if (!setequal(names(cfg$thresholds), qc_metric_names))
     stop_bad("Pipeline JSON thresholds must name exactly: ", paste(qc_metric_names, collapse = ", "))
   for (key in c("sample_overrides")) {
     value <- cfg[[key]]
+    if (!is.null(value)) named_object(value, key)
     if (!is.null(value) && (!is.list(value) ||
         (length(value) && (is.null(names(value)) || any(!nzchar(names(value)))))))
       stop_bad(key, " must be an object keyed by sample ID")
-    for (entry in value)
+    for (entry in value) {
+      named_object(entry, "sample override")
       if (!is.list(entry) || is.null(names(entry)) ||
           !all(names(entry) %in% qc_metric_names)) stop_bad("Invalid sample override")
+    }
   }
   overrides <- if (!is.null(sample)) cfg$sample_overrides[[sample]] else NULL
   if (!is.null(overrides) && !all(names(overrides) %in% qc_metric_names))
     stop_bad("Unknown override metric for ", sample)
   limits <- cfg$thresholds
   for (nm in names(overrides)) limits[[nm]] <- overrides[[nm]]
-  for (nm in qc_metric_names) {
-    bounds <- limits[[nm]]
+  validate_bounds <- function(bounds, nm) {
+    named_object(bounds, paste0("Bounds for ", nm))
     if (!is.list(bounds) || !setequal(names(bounds), c("min", "max")))
       stop_bad("Expected min and max for ", nm)
     if (all(vapply(bounds, is.null, logical(1)))) stop_bad("No bounds set for ", nm)
@@ -121,6 +137,12 @@ read_pipeline_config <- function(file, sample = NULL) {
     if (!is.null(bounds$min) && !is.null(bounds$max) && bounds$min > bounds$max)
       stop_bad("min exceeds max for ", nm)
   }
+  # Validate shared and all sample-specific settings, including overrides for
+  # samples other than the one currently processed, before any filtering.
+  for (nm in qc_metric_names) validate_bounds(cfg$thresholds[[nm]], nm)
+  for (id in names(cfg$sample_overrides))
+    for (nm in names(cfg$sample_overrides[[id]]))
+      validate_bounds(cfg$sample_overrides[[id]][[nm]], paste(id, nm, sep = "/"))
   if (!is.null(cfg$clustering))
     stop_bad("The shared clustering section has been replaced by review_QC_cluster, ",
              "doublet, RNA_processing, ATAC_processing and WNN; use the new template")
@@ -192,12 +214,12 @@ read_pipeline_config <- function(file, sample = NULL) {
   if (min(doublet_dims) != 1L || max(doublet_dims) > 50L)
     stop_bad("doublet.PC_dims must start at 1 and end at or below 50")
   for (key in c("sample_rates", "exclude_clusters"))
-    if (!is.null(doublet[[key]]) && !is.list(doublet[[key]]))
-      stop_bad("doublet.", key, " must be an object keyed by sample ID")
+    if (!is.null(doublet[[key]])) named_object(doublet[[key]], paste0("doublet.", key))
   rate <- if (is.null(doublet$expected_rate)) "auto" else doublet$expected_rate
   if (!is.null(sample) && !is.null(doublet$sample_rates[[sample]]))
     rate <- doublet$sample_rates[[sample]]
-  for (v in c(list(rate), doublet$sample_rates))
+  for (v in c(list(if (is.null(doublet$expected_rate)) "auto" else doublet$expected_rate),
+              doublet$sample_rates))
     if (!(identical(v, "auto") ||
           (length(v) == 1L && is.numeric(v) && is.finite(v) && v > 0 && v < 1)))
       stop_bad("Doublet rates must be 'auto' or numbers between zero and one")

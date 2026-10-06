@@ -10,6 +10,9 @@ if (!setequal(colnames(obj), colnames(atac))) stop_bad("Stage RNA/ATAC cells dif
 atac <- atac[, colnames(obj)]
 if (!identical(as.character(obj$sample_id), as.character(atac$sample_id)))
   stop_bad("Stage RNA/ATAC sample assignments differ")
+if (is.null(obj$barcode) || is.null(atac$barcode) ||
+    !identical(as.character(obj$barcode), as.character(atac$barcode)))
+  stop_bad("Stage RNA/ATAC original barcodes differ or are missing")
 obj[["ATAC"]] <- atac[["ATAC"]]
 for (key in c("nCount_ATAC", "nFeature_ATAC", "nucleosome_signal", "TSS.enrichment"))
   obj[[key]] <- atac[[key]][colnames(obj), 1, drop = TRUE]

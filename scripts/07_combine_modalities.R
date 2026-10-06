@@ -6,8 +6,14 @@ rna <- readRDS(args[1]); atac <- readRDS(args[2])
 if (!setequal(colnames(rna), colnames(atac))) stop_bad("RNA/ATAC cells differ")
 atac <- atac[, colnames(rna)]
 stopifnot(identical(colnames(rna), colnames(atac)))
+for (key in c("sample_id", "barcode"))
+  if (!(key %in% names(rna[[]])) || !(key %in% names(atac[[]])) ||
+      !identical(as.character(rna[[key]][, 1]), as.character(atac[[key]][, 1])))
+    stop_bad("RNA/ATAC metadata mismatch: ", key)
 rna[["ATAC"]] <- atac[["ATAC"]]
 rna[["lsi"]] <- atac[["lsi"]]
+if ("integrated_lsi" %in% Reductions(atac))
+  rna[["integrated_lsi"]] <- atac[["integrated_lsi"]]
 for (key in c("nCount_ATAC", "nFeature_ATAC", "nucleosome_signal", "TSS.enrichment"))
   rna[[key]] <- atac[[key]][colnames(rna), 1, drop = TRUE]
 saveRDS(rna, args[3])

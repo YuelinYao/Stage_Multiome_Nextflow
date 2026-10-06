@@ -29,6 +29,10 @@ def peakSettings = [:]
 if (params.json) {
   if (!file(params.json).exists()) error "Pipeline JSON not found: ${params.json}"
   def settings = new groovy.json.JsonSlurper().parse(file(params.json).toFile())
+  if (!(settings instanceof Map)) error 'Pipeline JSON must be an object'
+  def unknownSettings = settings.keySet() - ['peaks', 'note', 'thresholds', 'sample_overrides',
+    'review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'clustering']
+  if (unknownSettings) error "Unknown pipeline JSON sections: ${unknownSettings.join(', ')}"
   if (settings.peaks != null) {
     if (!(settings.peaks instanceof Map) ||
         !settings.peaks.keySet().every { it in ['peak_min', 'peak_max'] })
@@ -261,6 +265,11 @@ workflow {
   seenIds = new HashSet()
   rows = Channel.fromPath(params.samples, checkIfExists: true)
     .splitCsv(header: true)
+    .map { row ->
+      if (row.keySet() != ['stage', 'sample_id', 'arc_out', 'mgatk_dir'].toSet())
+        error 'Sample CSV must contain exactly stage,sample_id,arc_out,mgatk_dir columns'
+      row
+    }
     .filter { it.stage?.trim() == params.stage }
     .ifEmpty { error "No rows for stage ${params.stage} in ${params.samples}" }
     .map { row ->

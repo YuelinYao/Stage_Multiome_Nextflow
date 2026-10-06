@@ -14,6 +14,7 @@ run_checks <- function() {
   rna <- CreateSeuratObject(counts, assay = 'RNA')
   atac <- CreateSeuratObject(counts, assay = 'ATAC')
   rna$sample_id <- atac$sample_id <- 'WT_1'
+  rna$barcode <- atac$barcode <- cells
   atac$nucleosome_signal <- 1; atac$TSS.enrichment <- 5
   reduction <- function(assay, key) {
     x <- matrix(rnorm(240 * 50), 240, 50,
@@ -25,7 +26,7 @@ run_checks <- function() {
   atac[['lsi']] <- reduction('ATAC', 'LSI_')
   atac[['integrated_lsi']] <- reduction('ATAC', 'integratedLSI_')
   rna_file <- file.path(task_dir, 'rna.rds'); saveRDS(rna, rna_file)
-  atac_file <- file.path(task_dir, 'atac.rds'); saveRDS(atac, atac_file)
+  atac_file <- file.path(task_dir, 'atac.rds'); saveRDS(atac[, rev(cells)], atac_file)
   cfg <- list(RNA_processing = list(integrate_rna = TRUE, RNA_dims = 1:10),
               ATAC_processing = list(integrate_atac = FALSE, ATAC_dims = 2:20),
               WNN = list(RNA_dims = 1:35, ATAC_dims = 2:45,
@@ -47,6 +48,20 @@ run_checks <- function() {
   result <- readRDS(env$args[1])
   stopifnot(identical(colnames(result), cells), 'wsnn_clusters' %in% colnames(result[[]]),
             identical(result@misc$wnn_reductions, c(RNA = 'integrated.cca', ATAC = 'lsi')))
+  # Different source cell order must be aligned; contradictory original
+  # barcodes must fail before combining assays or computing neighbours.
+  bad <- atac; bad$barcode[1] <- 'wrong_barcode'; saveRDS(bad, atac_file)
+  expect_error <- function(expr) {
+    stopifnot(inherits(tryCatch(force(expr), error = identity), 'error'))
+  }
+  expect_error(for (expr in parse('scripts/08_wnn_stage.R')[-(1:2)]) eval(expr, env))
+  saveRDS(atac[, rev(cells)], atac_file)
+  # The standalone legacy combiner also retains the corrected ATAC reduction.
+  env$args <- c(rna_file, atac_file, file.path(task_dir, 'combined.rds'))
+  for (expr in parse('scripts/07_combine_modalities.R')[-(1:2)]) eval(expr, env)
+  combined <- readRDS(env$args[3])
+  stopifnot(identical(colnames(combined), cells),
+            'integrated_lsi' %in% Reductions(combined))
 }
 run_checks()
 cat('All independent WNN settings checks passed.\n')

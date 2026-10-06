@@ -25,6 +25,13 @@ Enable the Conda profile with `-profile conda` for local execution or `-profile 
 
 Package versions for the existing `stage_multiome` Conda environment are recorded in [environment.yml](environment.yml). This is an exported Linux environment, including its dependencies and installation prefix.
 
+DoubletFinder and cellXY are required for analysis but are absent from the current Conda dependency export. Verify that both are installed inside the shared environment before running analysis:
+
+```bash
+conda run -p /suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome \
+  Rscript -e 'stopifnot(requireNamespace("DoubletFinder", quietly = TRUE), requireNamespace("cellXY", quietly = TRUE))'
+```
+
 The sample CSV must contain only `stage,sample_id,arc_out,mgatk_dir`; see [examples/samples.csv](examples/samples.csv). For example:
 
 ```csv
@@ -116,6 +123,8 @@ nextflow run main.nf \
 
 
 Supply this file through `--json`. The sections below follow the workflow order; JSON key order itself does not affect execution. See [examples/pipeline_settings.example.json](examples/pipeline_settings.example.json) for the complete structure. Its QC thresholds are illustrative and must be reviewed for your samples.
+
+Section and parameter names are case-sensitive. Unknown sections, duplicate keys and invalid sample-specific settings are rejected. Every shared QC metric must have valid bounds; sample overrides replace the bounds for their named metrics.
 
 | JSON section | Parameters | Script that uses them |
 | --- | --- | --- |
@@ -355,7 +364,7 @@ Output: `STAGE/mgatk/<sample>.mtDNA.tsv`. For each position, `Depth_<position>` 
 
 `Heteroplasmy_all_5019` pools reference and alternate counts across 5019, 15200 and 16232 before dividing, rather than averaging site fractions. The pooled columns follow the same naming: `Depth_all_5019`, `Informative_depth_all_5019`, `Allele_ref_all_5019`, `Allele_mut_all_5019` and `Heteroplasmy_all_5019_covered`, which requires at least 25 **informative** reads. This differs from the supplied script's total-depth cutoff, so other-base calls cannot satisfy the coverage requirement. Pooling assumes these sites tag the intended 5019 haplotype; these measurements do not establish linkage or phase. The same metrics are calculated for mutant and WT samples without inferring genotype from sample names.
 
-`mtDNA_count` sums genome-wide base/strand counts; it represents sequenced base observations, not unique reads or molecules. `mtDNA_depth` retains the mgatk depth-table measurement. Neither metric is absolute mtDNA copy number. Step 09 attaches all these columns to the final WNN object's metadata.
+`mtDNA_count` sums genome-wide base/strand counts without length normalization; it represents sequenced base observations, not unique reads or molecules. `mtDNA_depth` is read directly from mgatk's depth table and represents mean coverage per mitochondrial position. For the same counted bases, `mtDNA_count` is approximately `mtDNA_depth × mitochondrial reference length`, with possible differences from depth-table rounding. See the [mgatk output definitions](https://github.com/caleblareau/mgatk/wiki/Outputs). Neither metric is absolute mtDNA copy number. Step 09 attaches all these columns to the final WNN object's metadata.
 
 ### Step 07–08: combine modalities and build WNN
 
@@ -367,7 +376,7 @@ Output: `STAGE/objects/wnn.rds`, including `wnn.umap` and `wsnn_clusters`. The o
 
 ### Step 09: attach mgatk measurements to the WNN object
 
-`09_add_mgatk.R` combines the sample metric tables, rejects duplicated/mismatched cell IDs, orders measurements to the WNN cell order, and attaches all measured mtDNA fields, including strand-specific heteroplasmy.
+`09_add_mgatk.R` combines sample metric tables with the same columns, preserves sample IDs literally (including numeric-looking labels such as `001`), rejects missing/duplicated/mismatched identifiers, orders measurements to the WNN cell order, and attaches all measured mtDNA fields, including strand-specific heteroplasmy.
 
 Outputs: `STAGE/objects/wnn_mgatk.rds` and `all_cells_mtDNA.tsv`.
 
@@ -432,6 +441,6 @@ Run `Rscript tests/atac_integration.R` to check stage dimension handling, recipr
 
 RNA and ATAC stage processing can run concurrently, while mgatk extraction runs per sample. WNN waits for both stage objects; mgatk attachment waits for WNN and all mgatk tables; marker detection waits for the annotated final object. The stage RNA/ATAC tasks each request 96 GB; adjust process resources in a site config if needed.
 
-Run the dependency-light regression checks with `Rscript tests/regression.R`. `Rscript tests/mgatk_metrics.R` checks the three 5019-associated sites, pooled 5019 fractions, zero/missing coverage, shuffled sparse-matrix rows and barcode order, invalid inputs, and step 09 metadata attachment using synthetic counts and real Seurat; mgatk file parsing is mocked. `Rscript tests/doubletfinder_stage.R` verifies independent DoubletFinder settings and outputs with real Seurat preprocessing and mocked DoubletFinder calls; `Rscript tests/wnn_settings.R` verifies independent WNN dimensions, clustering settings and reduction selection using synthetic Seurat objects. These parse every R script and exercise configuration validation, inclusive QC boundaries, non-finite QC rejection, and missing mgatk barcode handling using synthetic data. They do not exercise the full scientific analysis. This workspace has Java 8 and lacks Signac, DoubletFinder and cellXY, so full workflow execution requires the production environment and a small real stage.
+Run the dependency-light regression checks with `Rscript tests/regression.R`. `Rscript tests/mgatk_metrics.R` checks the three 5019-associated sites, pooled 5019 fractions, zero/missing coverage, shuffled sparse-matrix rows and barcode order, invalid inputs, and step 09 metadata attachment using synthetic counts and real Seurat; mgatk file parsing is mocked. `Rscript tests/doubletfinder_stage.R` verifies independent DoubletFinder settings and outputs with real Seurat preprocessing and mocked DoubletFinder calls; `Rscript tests/wnn_settings.R` verifies independent WNN dimensions, clustering settings and reduction selection using synthetic Seurat objects. The regression checks parse the workflow R scripts through step 10 and exercise configuration validation, inclusive QC boundaries, non-finite QC rejection, and missing mgatk barcode handling using synthetic data. They do not exercise the full scientific analysis. This workspace has Java 8 and lacks Signac, DoubletFinder and cellXY, so full workflow execution requires the production environment and a small real stage.
 
 Samples are validated before tasks launch and processed in sample-ID order. Shell arguments support paths containing spaces and apostrophes. An R-source checksum is included in task commands, so editing any R script invalidates cached tasks on `-resume`. ARC and mgatk directories remain shared absolute paths: changing their contents in place is not detected by Nextflow; use a fresh work directory when replacing those data. Package/environment changes also require a fresh work directory.

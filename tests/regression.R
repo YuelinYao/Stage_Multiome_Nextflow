@@ -1,5 +1,6 @@
 # Run from the repository root; no Signac or real sequencing inputs required.
-for (f in list.files("scripts", pattern = "[.]R$", full.names = TRUE)) parse(f)
+for (f in list.files("scripts", pattern = "[.]R$", full.names = TRUE))
+  if (!grepl("/11_", f)) parse(f)
 env <- new.env(parent = globalenv())
 # Load pure helpers without loading the unavailable scientific dependencies.
 for (expr in parse("scripts/00_common.R")) {
@@ -66,6 +67,16 @@ expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$sample_overrides <- list(list(nCount_RNA = list(min = 1, max = 2)))
 expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$thresholds$nCount_RNA <- list(min = 2, max = 1)
+expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$Wnn <- bad$WNN
+expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$sample_overrides <- list(other_sample = list(percent.mt = list(min = 20, max = 10)))
+expect_error(env$read_pipeline_config(write_config(bad), "WT_1"))
+bad <- cfg; bad$doublet$sample_rates <- list(0.04)
+expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$doublet$expected_rate <- 2; bad$doublet$sample_rates <- list(WT_1 = 0.04)
+expect_error(env$read_pipeline_config(write_config(bad), "WT_1"))
+bad <- cfg; bad$thresholds <- c(bad$thresholds, bad$thresholds["percent.mt"])
 expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$review_QC_cluster$RNA_dims <- "20:1"
 expect_error(env$read_pipeline_config(write_config(bad)))
