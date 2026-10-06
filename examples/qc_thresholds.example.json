@@ -1,0 +1,53 @@
+{
+  "thresholds": {
+    "nCount_RNA": {
+      "min": 1000,
+      "max": 40000
+    },
+    "nFeature_RNA": {
+      "min": 600,
+      "max": 8000
+    },
+    "percent.mt": {
+      "min": null,
+      "max": 10
+    },
+    "percent.ribo": {
+      "min": null,
+      "max": 30
+    },
+    "nCount_ATAC": {
+      "min": 1000,
+      "max": 30000
+    },
+    "nFeature_ATAC": {
+      "min": 500,
+      "max": 15000
+    },
+    "nucleosome_signal": {
+      "min": null,
+      "max": 2
+    },
+    "TSS.enrichment": {
+      "min": 1.5,
+      "max": null
+    }
+  },
+  "sample_overrides": {},
+  "clustering": {
+    "algorithm": 3,
+    "resolution": 2,
+    "RNA_dims": "1:20",
+    "RNA_umap_dims": "1:50",
+    "ATAC_dims": "2:40",
+    "ATAC_integrate_dims": "1:40",
+    "integrate_rna": true,
+    "integrate_atac": true,
+    "min_cutoff": 10
+  },
+  "doublet": {
+    "expected_rate": 0.05,
+    "sample_rates": {},
+    "exclude_clusters": {}
+  }
+}

@@ -1,0 +1,5 @@
+stage,sample_id,arc_out,mgatk_dir
+E8.5,5019_Hi_1,/absolute/path/cell_ranger/5019_Hi_1_enriched/outs,/absolute/path/mgatk/5019_Hi_1_enriched/final
+E8.5,5019_Hi_2,/absolute/path/cell_ranger/5019_Hi_2_enriched/outs,/absolute/path/mgatk/5019_Hi_2_enriched/final
+E8.5,5019_Lo_1,/absolute/path/cell_ranger/5019_Lo_1_enriched/outs,/absolute/path/mgatk/5019_Lo_1_enriched/final
+E8.5,5019_Lo_2,/absolute/path/cell_ranger/5019_Lo_2_enriched/outs,/absolute/path/mgatk/5019_Lo_2_enriched/final
