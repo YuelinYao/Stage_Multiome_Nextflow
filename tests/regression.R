@@ -8,20 +8,65 @@ for (expr in parse("scripts/00_common.R")) {
 expect_error <- function(expr) {
   stopifnot(inherits(tryCatch(force(expr), error = identity), "error"))
 }
-cfg <- jsonlite::fromJSON("examples/qc_thresholds.example.json", simplifyVector = FALSE)
+cfg <- jsonlite::fromJSON("examples/pipeline_settings.example.json", simplifyVector = FALSE)
 config_file <- tempfile(fileext = ".json")
 write_config <- function(x) {
   jsonlite::write_json(x, config_file, auto_unbox = TRUE, null = "null")
   config_file
 }
-valid <- env$read_analysis_config(write_config(cfg))
-stopifnot(identical(valid$clustering$RNA_dims, 1:20))
+valid <- env$read_pipeline_config(write_config(cfg))
+stopifnot(identical(valid$review_QC_cluster$RNA_dims, 1:20))
+stopifnot(identical(valid$ATAC_processing$min_cutoff, "q5"))
+for (cutoff in list("q0", "q5", "q95.5", 0, 10)) {
+  custom_cutoff <- cfg; custom_cutoff$ATAC_processing$min_cutoff <- cutoff
+  stopifnot(isTRUE(all.equal(env$read_pipeline_config(write_config(custom_cutoff))$ATAC_processing$min_cutoff, cutoff)))
+}
+custom_cutoff$ATAC_processing$min_cutoff <- NULL
+stopifnot(identical(env$read_pipeline_config(write_config(custom_cutoff))$ATAC_processing$min_cutoff, "q5"))
+for (cutoff in list("q100", "q101", "q-5", "5", "invalid", -1, 1.5, TRUE)) {
+  custom_cutoff$ATAC_processing$min_cutoff <- cutoff
+  expect_error(env$read_pipeline_config(write_config(custom_cutoff)))
+}
+# Every section can differ; none should inherit another step's settings.
+independent <- cfg
+for (section in c("review_QC_cluster", "doublet", "RNA_processing", "ATAC_processing", "WNN")) {
+  independent[[section]]$algorithm <- match(section, c("review_QC_cluster", "doublet", "RNA_processing", "ATAC_processing"), nomatch = 1)
+  independent[[section]]$resolution <- match(section, names(independent)) / 10
+}
+independent$review_QC_cluster$RNA_dims <- "1:12"
+independent$doublet$PC_dims <- "1:15"
+independent$RNA_processing$RNA_dims <- "1:25"
+independent$WNN$RNA_dims <- "1:35"
+independent$WNN$ATAC_dims <- "2:45"
+independent$ATAC_processing$ATAC_integrate_dims <- "1:45"
+separate <- env$read_pipeline_config(write_config(independent))
+stopifnot(identical(separate$review_QC_cluster$RNA_dims, 1:12),
+          identical(separate$doublet$PC_dims, 1:15),
+          identical(separate$RNA_processing$RNA_dims, 1:25),
+          identical(separate$WNN$RNA_dims, 1:35),
+          separate$doublet$algorithm == 2,
+          separate$RNA_processing$algorithm == 3,
+          separate$ATAC_processing$algorithm == 4,
+          separate$WNN$algorithm == 1)
+bad <- independent; bad$ATAC_processing$ATAC_integrate_dims <- "1:40"
+expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$doublet$resolution <- 0
+expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$clustering <- list(algorithm = 3)
+expect_error(env$read_pipeline_config(write_config(bad)))
+stopifnot(valid$peaks$peak_min == 20, valid$peaks$peak_max == 10000)
+legacy <- cfg; legacy$peaks <- NULL
+stopifnot(env$read_pipeline_config(write_config(legacy))$peaks$peak_min == 20)
+bad <- cfg; bad$peaks$peak_min <- 10000
+expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$peaks$peak_max <- 12.5
+expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$sample_overrides <- list(list(nCount_RNA = list(min = 1, max = 2)))
-expect_error(env$read_analysis_config(write_config(bad)))
+expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$thresholds$nCount_RNA <- list(min = 2, max = 1)
-expect_error(env$read_analysis_config(write_config(bad)))
-bad <- cfg; bad$clustering$RNA_dims <- "20:1"
-expect_error(env$read_analysis_config(write_config(bad)))
+expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$review_QC_cluster$RNA_dims <- "20:1"
+expect_error(env$read_pipeline_config(write_config(bad)))
 tab <- data.frame(barcode = c("lower", "upper", "below", "missing", "infinite"))
 limits <- setNames(lapply(env$qc_metric_names, function(x) list(min = 1, max = 2)),
                    env$qc_metric_names)
@@ -48,4 +93,21 @@ stopifnot(result$hf_5019[1] == 0.4, result$depth_5019[1] == 10,
           result$mtDNA_depth[1] == 100, is.na(result$hf_5019[2]),
           is.na(result$mtDNA_depth[2]))
 unlink(c(config_file, obj_file, out_file))
+stopifnot(env$nextgem_multiome_doublet_rate(5000) == 0.039,
+          abs(env$nextgem_multiome_doublet_rate(5500) - 0.0425) < 1e-12)
+expect_error(env$nextgem_multiome_doublet_rate(10001))
+expect_error(env$nextgem_multiome_doublet_rate(499))
+stopifnot(identical(valid$doublet$expected_rate, "auto"))
+stopifnot(identical(valid$doublet$PC_dims, 1:20))
+custom <- cfg; custom$doublet$PC_dims <- "1:30"
+stopifnot(identical(env$read_pipeline_config(write_config(custom))$doublet$PC_dims, 1:30))
+custom$doublet$PC_dims <- NULL
+stopifnot(identical(env$read_pipeline_config(write_config(custom))$doublet$PC_dims, 1:20))
+for (dims in c("2:20", "1:51", "20:1", "invalid")) {
+  custom$doublet$PC_dims <- dims
+  expect_error(env$read_pipeline_config(write_config(custom)))
+}
+override <- cfg; override$doublet$sample_rates <- list(WT_1 = 0.04)
+stopifnot(env$read_pipeline_config(write_config(override), "WT_1")$doublet$expected_rate == 0.04)
+unlink(config_file)
 cat("All regression checks passed.\n")

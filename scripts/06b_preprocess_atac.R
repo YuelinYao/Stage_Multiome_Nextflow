@@ -2,7 +2,8 @@
 source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1])), "00_common.R"))
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) >= 2L)
-settings <- read_analysis_config(args[1])$clustering
+cfg <- read_pipeline_config(args[1])
+settings <- cfg$ATAC_processing
 items <- read_stage_objects(args[-1], "ATAC")
 if (!all(vapply(items, function(x) identical(rownames(x[["ATAC"]]),
     rownames(items[[1]][["ATAC"]])), logical(1))))
@@ -11,7 +12,7 @@ set.seed(123)
 if (settings$integrate_atac && length(items) < 2L)
   stop_bad("ATAC integration requires at least two samples; set integrate_atac=false for one sample")
 # Reciprocal-LSI anchors need sample-specific LSI, kept only in memory.
-required_lsi <- max(c(settings$ATAC_dims, settings$ATAC_integrate_dims))
+required_lsi <- max(c(settings$ATAC_dims, settings$ATAC_integrate_dims, cfg$WNN$ATAC_dims))
 items <- lapply(items, function(obj) {
   DefaultAssay(obj) <- "ATAC"
   obj <- FindTopFeatures(obj, min.cutoff = settings$min_cutoff)
@@ -25,7 +26,7 @@ obj <- if (length(items) == 1L) items[[1]] else
 DefaultAssay(obj) <- "ATAC"
 obj <- FindTopFeatures(obj, min.cutoff = settings$min_cutoff)
 obj <- RunTFIDF(obj, verbose = FALSE)
-required_lsi <- max(c(settings$ATAC_dims, settings$ATAC_integrate_dims))
+required_lsi <- max(c(settings$ATAC_dims, settings$ATAC_integrate_dims, cfg$WNN$ATAC_dims))
 if (min(ncol(obj), length(VariableFeatures(obj))) <= required_lsi)
   stop_bad("Need more than ", required_lsi, " cells and variable peaks for LSI")
 obj <- RunSVD(obj, n = required_lsi, verbose = FALSE)

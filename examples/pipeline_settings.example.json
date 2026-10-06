@@ -1,4 +1,8 @@
 {
+  "peaks": {
+    "peak_min": 20,
+    "peak_max": 10000
+  },
   "thresholds": {
     "nCount_RNA": {
       "min": 1000,
@@ -34,20 +38,36 @@
     }
   },
   "sample_overrides": {},
-  "clustering": {
-    "algorithm": 3,
-    "resolution": 2,
+  "review_QC_cluster": {
     "RNA_dims": "1:20",
-    "RNA_umap_dims": "1:50",
-    "ATAC_dims": "2:40",
-    "ATAC_integrate_dims": "1:40",
-    "integrate_rna": true,
-    "integrate_atac": true,
-    "min_cutoff": 10
+    "algorithm": 3,
+    "resolution": 2
   },
   "doublet": {
-    "expected_rate": 0.05,
-    "sample_rates": {},
+    "PC_dims": "1:20",
+    "algorithm": 3,
+    "resolution": 2,
     "exclude_clusters": {}
+  },
+  "RNA_processing": {
+    "RNA_dims": "1:20",
+    "RNA_umap_dims": "1:50",
+    "algorithm": 3,
+    "resolution": 2,
+    "integrate_rna": true
+  },
+  "ATAC_processing": {
+    "ATAC_dims": "2:40",
+    "ATAC_integrate_dims": "1:40",
+    "algorithm": 3,
+    "resolution": 2,
+    "integrate_atac": true,
+    "min_cutoff": "q5"
+  },
+  "WNN": {
+    "RNA_dims": "1:20",
+    "ATAC_dims": "2:40",
+    "algorithm": 3,
+    "resolution": 2
   }
 }

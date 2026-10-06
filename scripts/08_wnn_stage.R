@@ -3,7 +3,8 @@ source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), val
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) == 4L)
 outfile <- args[1]
-settings <- read_analysis_config(args[2])$clustering
+cfg <- read_pipeline_config(args[2])
+settings <- cfg$WNN
 obj <- readRDS(args[3]); atac <- readRDS(args[4])
 if (!setequal(colnames(obj), colnames(atac))) stop_bad("Stage RNA/ATAC cells differ")
 atac <- atac[, colnames(obj)]
@@ -15,8 +16,8 @@ for (key in c("nCount_ATAC", "nFeature_ATAC", "nucleosome_signal", "TSS.enrichme
 for (reduction in Reductions(atac)) obj[[reduction]] <- atac[[reduction]]
 for (key in c("atac_unintegrated_clusters", "atac_integrated_clusters"))
   if (key %in% colnames(atac[[]])) obj[[key]] <- atac[[key]][, 1]
-rna_reduction <- if (settings$integrate_rna) "integrated.cca" else "rna_merged_pca"
-atac_reduction <- if (settings$integrate_atac) "integrated_lsi" else "lsi"
+rna_reduction <- if (cfg$RNA_processing$integrate_rna) "integrated.cca" else "rna_merged_pca"
+atac_reduction <- if (cfg$ATAC_processing$integrate_atac) "integrated_lsi" else "lsi"
 for (reduction in c(rna_reduction, atac_reduction))
   if (!(reduction %in% Reductions(obj))) stop_bad("Missing stage reduction: ", reduction)
 if (ncol(Embeddings(obj, rna_reduction)) < max(settings$RNA_dims) ||

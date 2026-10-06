@@ -32,7 +32,7 @@ stage,sample_id,arc_out,mgatk_dir
 E8.5,5019_Hi_1,/path/to/arc/outs,/path/to/mgatk/final
 ```
 
-Sample IDs must be unique within each stage, start with a letter or number, and contain only letters, numbers, `_`, `.` or `-`. Sample IDs are workflow labels and do not need to match upstream Cell Ranger or mgatk run names; the paths must identify the corresponding sample outputs, and sample-specific QC JSON keys must match these IDs. All execution nodes must be able to read the absolute input paths:
+Sample IDs must be unique within each stage, start with a letter or number, and contain only letters, numbers, `_`, `.` or `-`. Sample IDs are workflow labels and do not need to match upstream Cell Ranger or mgatk run names; the paths must identify the corresponding sample outputs, and sample-specific pipeline JSON keys must match these IDs. All execution nodes must be able to read the absolute input paths:
 
 | Input | Required content |
 |---|---|
@@ -51,13 +51,27 @@ Supply `--samples` with your sample CSV and `--stage` with the stage to analyse.
 
 Selected samples share a common peak set and are merged for stage-level RNA, ATAC and WNN analysis during the analysis phase. Outputs are written under `<outdir>/<stage>/`, such as `<outdir>/E8.5/`. Use the same `--stage` for review, cluster review and analysis.
 
-Also supply the absolute MACS3 executable path with `--macs3_path` and, when using the Conda profile, the environment path with `--conda_env`. Cluster review and analysis additionally require your edited QC JSON through `--qc_json`. The commands below use the environment and MACS3 paths listed above.
+Also supply the absolute MACS3 executable path with `--macs3_path` and, when using the Conda profile, the environment path with `--conda_env`. You can supply JSON through `--json` from the initial review phase to configure peak widths. Cluster review and analysis require a complete JSON with your edited QC thresholds. The commands below use the environment and MACS3 paths listed above.
 
 ## Run order: review, cluster review, analysis
 
 Run all phases (review, cluster review, analysis) from the project directory with the same Nextflow work directory and stage. With `-resume`, unchanged upstream tasks can be reused. Use `-profile conda` for local execution, or `-profile slurm,conda` on Slurm. Pass site-specific queue/account settings with `-c site.config`.
 
-First review raw QC distributions:
+
+## Pipeline settings JSON
+
+First create `/absolute/path/pipeline_settings.json` with your peak settings. A minimal JSON is sufficient for the initial review:
+
+```json
+{
+  "peaks": {
+    "peak_min": 20,
+    "peak_max": 10000
+  }
+}
+```
+
+Then review raw QC distributions. This phase reads only the JSON's peak settings; QC thresholds can be absent or unset. Omitting `--json` uses the default peak widths of 20 and 10,000 bp.
 
 ```bash
 nextflow run main.nf \
@@ -65,10 +79,11 @@ nextflow run main.nf \
   --outdir /absolute/path/stage_results \
   --conda_env /suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome \
   --macs3_path /suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3 \
+  --json /absolute/path/pipeline_settings.json \
   --phase review -profile slurm,conda -resume
 ```
 
-Inspect `stage_results/E8.5/qc/review/`. Copy `qc_thresholds.template.json` to a separate file and enter your chosen numeric bounds. Its all-null thresholds deliberately fail validation: it is a review template, not a runnable configuration. Thresholds in `examples/qc_thresholds.example.json` are illustrative, not recommendations for your samples.
+Inspect `stage_results/E8.5/qc/review/`. Copy the generated `pipeline_settings.template.json` to `/absolute/path/pipeline_settings.json` and enter your chosen numeric bounds. The template records the peak limits used in review and includes the QC, clustering and DoubletFinder settings needed for later phases. Its all-null thresholds deliberately fail validation in cluster review and analysis until edited. Thresholds in `examples/pipeline_settings.example.json` are illustrative, not recommendations for your samples. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
 
 Then inspect clusters of the QC-passing cells before DoubletFinder:
 
@@ -78,13 +93,13 @@ nextflow run main.nf \
   --outdir /absolute/path/stage_results \
   --conda_env /suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome \
   --macs3_path /suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3 \
-  --qc_json /absolute/path/edited_qc_thresholds.json \
+  --json /absolute/path/pipeline_settings.json \
   --phase cluster_review -profile slurm,conda -resume
 ```
 
-Inspect `qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. Complete cluster review before analysis: analysis now requires each sample's saved `<sample>.cluster_cells.tsv`. By default, it reads these files from `<outdir>/<stage>/qc/cluster_review/`; use `--cluster_review_dir /path/to/reviewed_tables` if they are stored elsewhere. If QC thresholds, clustering settings, input data or package versions change, review the resulting clusters again because their IDs may change.
+Inspect `qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. Complete cluster review before analysis: analysis now requires each sample's saved `<sample>.cluster_cells.tsv`. By default, it reads these files from `<outdir>/<stage>/qc/cluster_review/`; use `--cluster_review_dir /path/to/reviewed_tables` if they are stored elsewhere. If QC thresholds, `review_QC_cluster` settings, input data or package versions change, review the resulting clusters again because their IDs may change.
 
-Add cluster exclusions to a copy of the JSON used for cluster review, preserving its QC thresholds and clustering settings. Analysis uses the exact saved cluster labels, rather than recreating them; if you change inputs or QC/clustering settings, run cluster review again.
+Add cluster exclusions to a copy of the JSON used for cluster review, preserving its QC thresholds and `review_QC_cluster` settings. Analysis uses the exact saved cluster labels, rather than recreating them; if you change inputs or QC/review-clustering settings, run cluster review again.
 
 Finally run analysis with the reviewed JSON:
 
@@ -94,46 +109,54 @@ nextflow run main.nf \
   --outdir /absolute/path/stage_results \
   --conda_env /suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome \
   --macs3_path /suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3 \
-  --qc_json /absolute/path/edited_qc_thresholds.json \
+  --json /absolute/path/pipeline_settings.json \
   --phase analysis -profile slurm,conda -resume
 ```
 
-## QC and analysis JSON
 
-The JSON has four sections: `thresholds`, optional `sample_overrides`, `clustering`, and optional `doublet`. An abridged settings example (retain all eight threshold entries from the template):
+
+Supply this file through `--json`. The sections below follow the workflow order; JSON key order itself does not affect execution. See [examples/pipeline_settings.example.json](examples/pipeline_settings.example.json) for the complete structure. Its QC thresholds are illustrative and must be reviewed for your samples.
+
+| JSON section | Parameters | Script that uses them |
+| --- | --- | --- |
+| `peaks` | `peak_min`, `peak_max` | `main.nf` reads the limits and passes them to `02_consensus_peaks.R`; `04_qc_review.R` records them in the template |
+| `thresholds` | `min`, `max` for each of the eight QC metrics | `05a_review_clusters.R`, `05b_qc_doubletfinder.R` |
+| `sample_overrides` | Per-sample `min`, `max` for selected QC metrics | `05a_review_clusters.R`, `05b_qc_doubletfinder.R` |
+| `review_QC_cluster` | `RNA_dims`, `algorithm`, `resolution` | `05a_review_clusters.R` |
+| `doublet` | `PC_dims`, `algorithm`, `resolution`, `exclude_clusters`; optional `expected_rate`, `sample_rates` | `05b_qc_doubletfinder.R` |
+| `RNA_processing` | `RNA_dims`, `RNA_umap_dims`, `algorithm`, `resolution`, `integrate_rna` | `06a_preprocess_rna.R` |
+| `ATAC_processing` | `ATAC_dims`, `ATAC_integrate_dims`, `algorithm`, `resolution`, `integrate_atac`, `min_cutoff` | `06b_preprocess_atac.R` |
+| `WNN` | `RNA_dims`, `ATAC_dims`, `algorithm`, `resolution` | `08_wnn_stage.R` |
+
+`scripts/00_common.R` reads and validates these sections and supplies the shared QC/clustering helpers. Additionally, `06a_preprocess_rna.R` reads `WNN.RNA_dims` and `06b_preprocess_atac.R` reads `WNN.ATAC_dims` to compute enough components for WNN. `08_wnn_stage.R` reads `RNA_processing.integrate_rna` and `ATAC_processing.integrate_atac` to select integrated or unintegrated reductions. Each step's clustering algorithm and resolution come only from its own section.
+
+The `algorithm` key uses Seurat's clustering algorithm codes in every analysis section:
+
+| Value | Clustering algorithm |
+| --- | --- |
+| `1` | Louvain |
+| `2` | Louvain with multilevel refinement |
+| `3` | SLM (Smart Local Moving) |
+| `4` | Leiden |
+
+The template defaults to `3`. See [Seurat `FindClusters`](https://satijalab.org/seurat/reference/findclusters) for the algorithm definitions.
+
+**1. `peaks`: common peak widths.** Used from the initial review phase, before QC metrics are calculated. Both width boundaries are excluded. Omitted settings default to 20 and 10,000 bp; keep them consistent across all phases.
 
 ```json
-{
-  "clustering": {
-    "algorithm": 3,
-    "resolution": 2,
-    "RNA_dims": "1:20",
-    "RNA_umap_dims": "1:50",
-    "ATAC_dims": "2:40",
-    "ATAC_integrate_dims": "1:40",
-    "integrate_rna": true,
-    "integrate_atac": true,
-    "min_cutoff": 10
-  },
-  "doublet": {
-    "expected_rate": 0.05,
-    "sample_rates": {},
-    "exclude_clusters": {}
-  }
+"peaks": {
+  "peak_min": 20,
+  "peak_max": 10000
 }
 ```
 
-For reviewed sample-specific decisions, use this structure; the cluster IDs and rate below are examples only:
+**2. `thresholds`: shared cell QC limits.** After reviewing the distributions, fill in `min` and `max` for all eight metrics in the generated template. Each metric needs at least one numeric bound; `null` disables one side. Cells must pass all eight metrics, bounds are inclusive, and non-finite values fail QC. These thresholds are applied before clustering in 05a and again in 05b. For example, one metric entry is:
 
 ```json
-"doublet": {
-  "expected_rate": 0.05,
-  "sample_rates": {"5019_Hi_1": 0.06},
-  "exclude_clusters": {"5019_Hi_1": ["3", "7"]}
-}
+"nCount_RNA": {"min": 1000, "max": 40000}
 ```
 
-Each metric must have `min` and `max`, with at least one numeric bound. `null` disables one side. Cells must pass all eight metrics; bounds are inclusive and non-finite values fail QC. `sample_overrides` replaces both bounds for each listed metric in a named sample. For example:
+**3. `sample_overrides`: optional sample-specific QC limits.** For each listed metric, both sample-specific bounds replace the shared bounds. Unlisted metrics retain their shared limits. Overrides may be stricter or more permissive; choose them from the sample's QC distributions. Keys must match CSV `sample_id` values. Leave this section as `{}` for shared thresholds only.
 
 ```json
 "sample_overrides": {
@@ -141,9 +164,66 @@ Each metric must have `min` and `max`, with at least one numeric bound. `null` d
 }
 ```
 
-Dimension strings are inclusive ranges. `RNA_dims` controls per-sample PCA/neighbours/clustering, DoubletFinder PCs, RNA CCA anchors, and RNA dimensions used by WNN. `RNA_umap_dims` controls both stage RNA UMAPs; stage PCA and integrated CCA retain enough components for this range. `ATAC_dims` controls ATAC neighbours, clustering, UMAP, reciprocal-LSI anchors and WNN. Its default drops LSI component 1. `ATAC_integrate_dims` controls corrected LSI components and must extend at least to the largest `ATAC_dims` component. `min_cutoff = 10` selects peaks with more than 10 total counts for LSI; it does not delete other peaks from the raw assay.
+**4. `review_QC_cluster`: per-sample cluster review in 05a.** These settings apply after cell QC, before you choose clusters to remove. `RNA_dims` selects PCs for neighbours and clustering. Algorithm 3 is SLM; `resolution` controls cluster granularity.
 
-New templates enable both integrations. Each requires at least two samples. For a single-sample stage set both switches to `false`. Older JSON files without `integrate_rna` default to RNA integration; their explicit `integrate_atac` setting is retained. Missing `doublet` settings default to a 5% expected rate and no cluster exclusions. Choose the expected rate from your experiment's loading information; 5% is a pipeline default, not a universal biological estimate.
+```json
+"review_QC_cluster": {
+  "RNA_dims": "1:20",
+  "algorithm": 3,
+  "resolution": 2
+}
+```
+
+**5. `doublet`: reviewed-cluster removal and DoubletFinder in 05b.** This step removes the listed 05a cluster IDs, then uses its own algorithm and resolution for homotypic-correction clustering. `PC_dims` controls neighbours, clustering, the pK sweep, DoubletFinder and UMAP. PCA computes 50 components; the range must start at PC1 and end at or below PC50. Cluster IDs below are examples only; use `{}` when none should be removed.
+
+```json
+"doublet": {
+  "PC_dims": "1:20",
+  "algorithm": 3,
+  "resolution": 2,
+  "exclude_clusters": {"5019_Hi_1": ["3", "7"]}
+}
+```
+
+By default, the expected rate is estimated from ARC's detected-cell count using `nextgem_multiome_doublet_rate()`. The expected doublet count is adjusted for homotypic doublets. Numeric `expected_rate` and `sample_rates` remain optional overrides; omit both to use ARC-based estimation. See Step 05b for the Next GEM Multiome assumption and supported count range.
+
+**6. `RNA_processing`: RNA analysis in 06a.** `RNA_dims` controls per-sample and stage RNA neighbours/clustering and CCA anchors. `RNA_umap_dims` controls both stage RNA UMAPs. These clusters use this section's algorithm and resolution. `integrate_rna` enables CCA integration between samples; it requires at least two samples. Set it to `false` for a single-sample stage.
+
+```json
+"RNA_processing": {
+  "RNA_dims": "1:20",
+  "RNA_umap_dims": "1:50",
+  "algorithm": 3,
+  "resolution": 2,
+  "integrate_rna": true
+}
+```
+
+**7. `ATAC_processing`: ATAC analysis in 06b.** `ATAC_dims` controls neighbours, clustering, UMAP and reciprocal-LSI anchors. `ATAC_integrate_dims` selects components corrected during integration. When integration is enabled, it must cover every component requested by both `ATAC_processing.ATAC_dims` and `WNN.ATAC_dims`. `min_cutoff = "q5"` selects peaks above the 5th percentile of total counts for LSI (approximately the top 95%; tied counts can affect the proportion), retaining all peaks in the raw assay. This cutoff is applied separately to each sample and again to the merged stage object. The pipeline accepts percentile strings from `"q0"` to below `"q100"`, or nonnegative integer count thresholds; `10`, for example, selects peaks with more than 10 total counts. See [Signac `FindTopFeatures`](https://stuartlab.org/signac/reference/findtopfeatures). Set `integrate_atac` to `false` for a single-sample stage.
+
+```json
+"ATAC_processing": {
+  "ATAC_dims": "2:40",
+  "ATAC_integrate_dims": "1:40",
+  "algorithm": 3,
+  "resolution": 2,
+  "integrate_atac": true,
+  "min_cutoff": "q5"
+}
+```
+
+**8. `WNN`: combined RNA/ATAC analysis in 08.** Its own `RNA_dims` and `ATAC_dims` select components for multimodal neighbours; its algorithm and resolution control final `wsnn` clusters. WNN uses integrated reductions when the respective RNA/ATAC integration switch is enabled. RNA and ATAC preprocessing compute enough components for these independent WNN ranges.
+
+```json
+"WNN": {
+  "RNA_dims": "1:20",
+  "ATAC_dims": "2:40",
+  "algorithm": 3,
+  "resolution": 2
+}
+```
+
+All dimension strings are inclusive: `"1:20"` selects components 1–20. Each analysis section has independent defaults matching the examples above; changing one section does not change another section's clustering settings. The old shared `clustering` section is rejected with a migration message: copy its settings into the relevant new sections or start from the new template. Keep QC thresholds and `review_QC_cluster` settings fixed after cluster review; changing only downstream analysis settings does not require reviewing cluster IDs again.
 
 ## Details for each step
 
@@ -157,11 +237,26 @@ Related tutorial: [Signac 1.2.0 multiome peak-calling tutorial](https://stuartla
 
 Outputs: `STAGE/peaks/sample/<sample>.bed`. This uses all fragments belonging to the ARC filtered-cell barcodes, before the reviewed QC thresholds; it does not call peaks from non-cell barcodes or require a peak to be present in every sample.
 
-### Step 02: create and recount a stage-level common peak set
+### Step 02: create a stage-level common peak set
 
-`02_consensus_peaks.R` takes every sample peak BED within the chosen stage and uses `GenomicRanges::reduce` to create a union, merging overlapping or adjacent intervals. Default width filtering retains peaks with width strictly greater than 20 bp and strictly less than 10,000 bp (`--peak_min 20 --peak_max 10000`). These defaults are defined near the top of `main.nf` as `params.peak_min = 20` and `params.peak_max = 10000`, so you do not need to supply them on the command line. To override them, add arguments such as `--peak_min 50 --peak_max 5000` to your Nextflow command. Both boundaries are excluded: this example retains widths strictly greater than 50 bp and strictly less than 5,000 bp.
+`02_consensus_peaks.R` combines the peak BED files from all selected samples within the stage. It uses `GenomicRanges::reduce` to merge overlapping or adjacent intervals into a union, then filters the widths of those merged intervals. A peak does not need to occur in every sample to enter this common set.
 
-Output: `STAGE/peaks/common_peaks.bed`. The shared helper subsequently uses `FeatureMatrix` to recount these exact intervals in each sample's fragments, retaining the complete feature set even for absent chromosomes. Both review and filtering use these counts. This follows the [Signac merging procedure](https://stuartlab.org/signac/articles/merging): establish common intervals, quantify them separately, then merge.
+Set the width limits in the pipeline JSON supplied through `--json`:
+
+```json
+"peaks": {
+  "peak_min": 20,
+  "peak_max": 10000
+}
+```
+
+This retains merged intervals with width strictly greater than 20 bp and strictly less than 10,000 bp; both boundaries are excluded. These are also the defaults when the settings are omitted. To change them, edit `peak_min` and `peak_max` in the JSON. For example, values of 50 and 5,000 retain widths strictly greater than 50 bp and strictly less than 5,000 bp.
+
+Nextflow reads these settings before creating the common peak set in every phase, including the initial review when QC thresholds may still be unset. The generated `pipeline_settings.template.json` records the limits used.
+
+Use the same peak limits for review, cluster review and analysis. If you change them, rerun review and cluster review because the common peak set, ATAC counts and QC-passing cells may change.
+
+Output: `<outdir>/<stage>/peaks/common_peaks.bed`. In subsequent steps, the shared helper in `scripts/00_common.R` uses `FeatureMatrix` to count each sample's fragments over these same intervals, preserving a common feature set and order. Both QC review and filtering use these counts. This follows the [Signac merging procedure](https://stuartlab.org/signac/articles/merging): establish common intervals, quantify them separately, then merge.
 
 ### Step 03–04: review the eight RNA/ATAC QC metrics
 
@@ -190,7 +285,7 @@ Both the per-sample `<sample>.metrics.tsv` files and the combined `all_cells_qc_
 | `qc_summary.tsv` | One row per sample/metric, plus pooled `ALL_STAGE`: n, mean, SD, min, quantiles, median, max, scaled MAD and 3/5/7-MAD bounds |
 | `qc_mad_candidates.tsv` | One row per sample/metric/multiplier with lower and upper bounds |
 | `stage_qc_distributions.pdf` | Eight violin-plot pages comparing samples |
-| `qc_thresholds.template.json` | Editable thresholds and analysis settings; written by `jsonlite::write_json()` in the task work directory, then copied to `<outdir>/<stage>/qc/review/qc_thresholds.template.json` |
+| `pipeline_settings.template.json` | Editable thresholds and analysis settings; written by `jsonlite::write_json()` in the task work directory, then copied to `<outdir>/<stage>/qc/review/pipeline_settings.template.json` |
 
 Run `Rscript tests/qc_review.R` to check table combination, QC summaries, MAD bounds, template generation and plotting with synthetic data.
 
@@ -198,7 +293,7 @@ For k = 3, 5 or 7, bounds are `median ± k × mad(x, constant = 1.4826)` and app
 
 ### Step 05a: review low-quality clusters before DoubletFinder
 
-`05a_review_clusters.R`, run by `--phase cluster_review`, applies the reviewed eight-metric QC thresholds to each sample. It log-normalizes RNA, selects 2,000 variable genes, scales, computes individual PCA, finds neighbours with `RNA_dims`, and clusters with the configured algorithm/resolution. The saved `<sample>.cluster_cells.tsv` contains the barcode-to-cluster assignments that step `05b` uses for cluster removal.
+`05a_review_clusters.R`, run by `--phase cluster_review`, applies the reviewed eight-metric QC thresholds to each sample. It log-normalizes RNA, selects 2,000 variable genes, scales, computes individual PCA, finds neighbours with `review_QC_cluster.RNA_dims`, and clusters with that section's algorithm/resolution. The saved `<sample>.cluster_cells.tsv` contains the barcode-to-cluster assignments that step `05b` uses for cluster removal.
 
 Outputs in `STAGE/qc/cluster_review/`: `<sample>.cluster_cells.tsv`, `<sample>.cluster_summary.tsv`, `<sample>.cluster_qc.pdf`, and `<sample>.cluster_markers.tsv`. Marker tables retain only rows with finite `p_val_adj < 0.05`. Review RNA counts, mitochondrial percentages and marker informativeness together. Enter unwanted cluster IDs as strings in `doublet.exclude_clusters`. This provides the manual review/removal route described by the [DoubletFinder authors](https://github.com/chris-mcginnis-ucsf/DoubletFinder#best-practices-for-scrna-seq-data-generated-without-sample-multiplexing). For a related example of reviewing QC metrics by cluster, removing low-quality clusters and repeating preprocessing, see the [snRNA-seq Guide: cluster QC](https://lahuuki.github.io/rstats/2026-03-19-snRNAseqGuide/index.html).
 
@@ -206,21 +301,27 @@ Outputs in `STAGE/qc/cluster_review/`: `<sample>.cluster_cells.tsv`, `<sample>.c
 
 `05b_qc_doubletfinder.R` applies all eight QC thresholds and reads the saved `<sample>.cluster_cells.tsv` from step 05a. It validates the sample ID, unique barcodes, cluster labels, QC-passing cell set and QC measurements, aligns labels by barcode, and removes the listed clusters without repeating the preliminary clustering. It then computes normalization, variable features, PCA, neighbours and clusters on the retained cells before running DoubletFinder. Unknown exclusion IDs, mismatched cells and changed QC measurements fail explicitly; rerun cluster review when inputs or QC decisions change. The original reviewed labels remain in the RNA metadata as `reviewed_qc_cluster`; newly computed `pre_doublet_clusters` are used for DoubletFinder's homotypic correction. At least 100 cells must remain before DoubletFinder.
 
-DoubletFinder runs separately on each sample, using log-normalized RNA (`sct = FALSE`) and the configured RNA dimensions. A pN/pK sweep selects the pK with maximum BCmetric. The expected doublet count uses the configured sample rate and a homotypic correction derived from the reclustered RNA populations. Inspect the estimates for your experiment; this correction uses clusters as a proxy for cell types. At least 50 singlets must remain.
+DoubletFinder runs separately on each sample, using log-normalized RNA (`sct = FALSE`). After reviewed-cluster removal, step 05b uses [Seurat’s default `RunPCA()` setting](https://satijalab.org/seurat/reference/runpca) of 50 computed PCs and uses `doublet.PC_dims` (default PC1–PC20) for neighbours, clustering, the pK sweep and DoubletFinder. Its homotypic-correction clustering uses `doublet.algorithm` and `doublet.resolution`. This configured PC range is a workflow choice; no automatic PC selection is performed. The report records the PCs used as `df_pcs` and the number computed as `pca_computed`. A pN/pK sweep selects the pK with maximum BCmetric. The expected doublet count uses the configured sample rate and a homotypic correction derived from the reclustered RNA populations. Inspect the estimates for your experiment; this correction uses clusters as a proxy for cell types. At least 50 singlets must remain.
+
+By default, omit `expected_rate` and `sample_rates`. Step 05b reads `Estimated number of cells` from each ARC `outs/summary.csv` and passes it to `nextgem_multiome_doublet_rate()`, which linearly interpolates the recovered-nuclei multiplet-rate table in the [Next GEM Multiome guide, page 22](https://cdn.10xgenomics.com/image/upload/v1666737555/support-documents/CG000338_ChromiumNextGEM_Multiome_ATAC_GEX_User_Guide_RevF.pdf#page=22). This assumes Next GEM Multiome chemistry. Counts outside 500–10,000 require an explicit numeric rate; use a numeric global `expected_rate` or per-sample `sample_rates` override for other chemistry or experimentally informed rates. The initial ARC count selects the rate; the count after QC and cluster removal determines `n_exp = max(1, round(cluster_pass × expected_rate × (1 − homotypic_proportion)))`. The report records `arc_detected_cells`, `rate_source`, `expected_rate`, `homotypic_proportion`, `expected_doublets_unadjusted` and the adjusted `expected_doublets`. QC filtering can change the doublet fraction, so this is a starting estimate.
+
 
 The resulting singlet barcodes select both RNA and ATAC. Cell names gain the sample prefix; metadata retains `sample_id` and the original `barcode` for mgatk matching. Outputs are individual `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints in the Nextflow work directory, and a published `<sample>.qc.tsv` recording raw/QC/cluster/singlet counts, excluded cluster IDs, pK, rate and expected doublets.
+
+Before selecting singlets, step 05b computes RNA UMAP using `doublet.PC_dims` and saves `<outdir>/<stage>/qc/filtered/<sample>_Doublet.pdf`, showing both singlets and doublets. The plot uses `theme_bw()`, a centered sample title, and a 6 × 5 inch page. Singlet RNA checkpoints retain the `DoubletFinder` classification metadata.
 
 Cell counts are reported per sample in `<outdir>/<stage>/qc/filtered/<sample>.qc.tsv` and in the task's `.command.err` log. `raw_joint` is the number of starting cells with both modalities. Each removal count is relative to the immediately preceding step; if no clusters are excluded, `cluster_removed` is zero.
 
 | Step | Cells remaining | Cells removed |
 | --- | --- | --- |
+| Starting total: cells with both RNA and ATAC | `raw_joint` | — |
 | 1. Initial QC metric filtering | `qc_pass` | `qc_removed` |
 | 2. Reviewed-cluster removal, before reclustering | `cluster_pass` | `cluster_removed` |
 | 3. DoubletFinder singlet selection | `df_singlets` | `df_removed` |
 
 ### Step 06a: individual RNA preprocessing, then stage merge and integration
 
-`06a_preprocess_rna.R` receives the JSON and all filtered RNA RDS files for the stage. For each sample, in memory, it performs log-normalization, 2,000-variable-gene selection, scaling, individual PCA, neighbours and sample clustering. It then adds:
+`06a_preprocess_rna.R` uses the `RNA_processing` settings and receives the JSON and all filtered RNA RDS files for the stage. For each sample, in memory, it performs log-normalization, 2,000-variable-gene selection, scaling, individual PCA, neighbours and sample clustering. It then adds:
 
 - `CellCycleScoring`: `S.Score`, `G2M.Score` and `Phase`, using case-insensitive matches of Seurat's 2019 marker panel to observed mouse symbols. This is symbol matching, not the online gprofiler orthology conversion used in YY_04b. At least five markers per panel must match. No cell-cycle regression is applied.
 - `cellXY::classifySex(counts, genome = "Mm", qc = FALSE)`: stored as `sex_prediction`. The cells already passed pipeline QC; uncertain predictions remain missing. These are expression-based predictions, not sample sex assignments. cellXY internally converts counts to a dense matrix, so large samples may require substantial RAM.
@@ -232,7 +333,7 @@ Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, select
 
 ### Step 06b: individual ATAC preprocessing, then stage merge and integration
 
-`06b_preprocess_atac.R` receives the JSON and all filtered ATAC RDS files. In memory it runs sample-level `FindTopFeatures`, TF-IDF and SVD/LSI; these sample LSI reductions are required for reciprocal-LSI anchors. It merges the objects while retaining fragment mappings, then recomputes stage TF-IDF/LSI and generates `atac_unintegrated_clusters` and `atac_unintegrated_umap`.
+`06b_preprocess_atac.R` uses the `ATAC_processing` settings and receives the JSON and all filtered ATAC RDS files. In memory it runs sample-level `FindTopFeatures`, TF-IDF and SVD/LSI; these sample LSI reductions are required for reciprocal-LSI anchors. It merges the objects while retaining fragment mappings, then recomputes stage TF-IDF/LSI and generates `atac_unintegrated_clusters` and `atac_unintegrated_umap`.
 
 When enabled, `FindIntegrationAnchors(reduction = "rlsi")` and `IntegrateEmbeddings` create `integrated_lsi`, followed by `atac_integrated_clusters` and `atac_integrated_umap`. Both integration steps use a weighting neighbourhood capped by the smallest sample size. This follows YY_06 and the [Signac ATAC integration workflow](https://stuartlab.org/signac/articles/integrate_atac.html).
 
@@ -248,7 +349,7 @@ Output: `STAGE/mgatk/<sample>.mtDNA.tsv`. `hf_5019_covered` is missing below 10 
 
 `08_wnn_stage.R` aligns the stage RNA and ATAC cells, verifies their sample assignments, and attaches ATAC assays, QC metadata, reductions and modality cluster labels to the RNA object. It uses `integrated.cca` and `integrated_lsi` when their switches are enabled, or `rna_merged_pca` and `lsi` otherwise. It preserves stage modality UMAPs and cycle/sex metadata.
 
-`FindMultiModalNeighbors` uses `RNA_dims` and `ATAC_dims`, storing modality weights. WNN UMAP uses the weighted neighbour graph; clusters use the `wsnn` graph and configured algorithm/resolution. Selected reductions are recorded in `obj@misc$wnn_reductions`.
+`FindMultiModalNeighbors` uses `WNN.RNA_dims` and `WNN.ATAC_dims`, storing modality weights. WNN UMAP uses the weighted neighbour graph; clusters use the `wsnn` graph and `WNN.algorithm`/`WNN.resolution`. Selected reductions are recorded in `obj@misc$wnn_reductions`.
 
 Output: `STAGE/objects/wnn.rds`, including `wnn.umap` and `wsnn_clusters`. The old `07_combine_modalities.R` remains a legacy helper and is not invoked by Nextflow.
 
@@ -317,6 +418,6 @@ Run `Rscript tests/mtdna_copy_number.R` for synthetic CIGAR, base-quality, dupli
 
 RNA and ATAC stage processing can run concurrently, while mgatk extraction runs per sample. WNN waits for both stage objects; mgatk attachment waits for WNN and all mgatk tables; marker detection waits for the annotated final object. The stage RNA/ATAC tasks each request 96 GB; adjust process resources in a site config if needed.
 
-Run the dependency-light regression checks with `Rscript tests/regression.R`. These parse every R script and exercise configuration validation, inclusive QC boundaries, non-finite QC rejection, and missing mgatk barcode handling using synthetic data. They do not exercise the full scientific analysis. This workspace has Java 8 and lacks Signac, DoubletFinder and cellXY, so full workflow execution requires the production environment and a small real stage.
+Run the dependency-light regression checks with `Rscript tests/regression.R`. `Rscript tests/doubletfinder_stage.R` verifies independent DoubletFinder settings and outputs with real Seurat preprocessing and mocked DoubletFinder calls; `Rscript tests/wnn_settings.R` verifies independent WNN dimensions, clustering settings and reduction selection using synthetic Seurat objects. These parse every R script and exercise configuration validation, inclusive QC boundaries, non-finite QC rejection, and missing mgatk barcode handling using synthetic data. They do not exercise the full scientific analysis. This workspace has Java 8 and lacks Signac, DoubletFinder and cellXY, so full workflow execution requires the production environment and a small real stage.
 
 Samples are validated before tasks launch and processed in sample-ID order. Shell arguments support paths containing spaces and apostrophes. An R-source checksum is included in task commands, so editing any R script invalidates cached tasks on `-resume`. ARC and mgatk directories remain shared absolute paths: changing their contents in place is not detected by Nextflow; use a fresh work directory when replacing those data. Package/environment changes also require a fresh work directory.

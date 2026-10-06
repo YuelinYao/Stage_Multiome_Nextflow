@@ -4,11 +4,11 @@ params.samples = null
 params.stage = null
 params.outdir = 'results'
 params.macs3_path = null
-params.qc_json = null
+params.json = null
 params.cluster_review_dir = null
 params.phase = 'review'
-params.peak_min = 20
-params.peak_max = 10000
+params.peak_min = null
+params.peak_max = null
 
 // Quote every shell argument, including paths containing spaces or apostrophes.
 def shellQuote(value) { "'" + value.toString().replace("'", "'\"'\"'") + "'" }
@@ -24,6 +24,21 @@ def scriptsHash = sourceDigest.digest().encodeHex().toString()
 if (!params.samples || !params.stage) error 'Provide --samples manifest.csv and --stage E8.5'
 if (!(params.phase in ['review', 'cluster_review', 'analysis'])) error '--phase must be review, cluster_review or analysis'
 if (!(params.stage.toString() ==~ /[A-Za-z0-9][A-Za-z0-9_.-]*/)) error 'Stage must be a safe directory name'
+// Read only peak settings here: a review JSON can still have unset QC bounds.
+def peakSettings = [:]
+if (params.json) {
+  if (!file(params.json).exists()) error "Pipeline JSON not found: ${params.json}"
+  def settings = new groovy.json.JsonSlurper().parse(file(params.json).toFile())
+  if (settings.peaks != null) {
+    if (!(settings.peaks instanceof Map) ||
+        !settings.peaks.keySet().every { it in ['peak_min', 'peak_max'] })
+      error 'Pipeline JSON peaks must be an object containing peak_min and/or peak_max'
+    peakSettings = settings.peaks
+  }
+}
+// Explicit command-line values override JSON; omitted settings use defaults.
+params.peak_min = params.peak_min != null ? params.peak_min : (peakSettings.peak_min != null ? peakSettings.peak_min : 20)
+params.peak_max = params.peak_max != null ? params.peak_max : (peakSettings.peak_max != null ? peakSettings.peak_max : 10000)
 if (!(params.peak_min.toString() ==~ /[0-9]+/) || !(params.peak_max.toString() ==~ /[0-9]+/) ||
     params.peak_min.toString().toLong() >= params.peak_max.toString().toLong())
   error 'Peak widths must be nonnegative integers with peak_min < peak_max'
@@ -32,8 +47,8 @@ if (!java.nio.file.Paths.get(params.macs3_path.toString()).isAbsolute()) error '
 if (!java.nio.file.Files.isRegularFile(file(params.macs3_path)) ||
     !java.nio.file.Files.isExecutable(file(params.macs3_path)))
   error "MACS3 executable not found or not executable: ${params.macs3_path}"
-if (params.phase in ['cluster_review', 'analysis'] && (!params.qc_json || !file(params.qc_json).exists()))
-  error 'Cluster review and analysis require --qc_json /absolute/path/to/edited_qc_thresholds.json'
+if (params.phase in ['cluster_review', 'analysis'] && (!params.json || !file(params.json).exists()))
+  error 'Cluster review and analysis require --json /absolute/path/to/pipeline_settings.json'
 if (params.enable_conda) {
   if (!params.conda_env) error 'The conda profile requires --conda_env /shared/path/to/env (or environment.yml)'
   if (!file(params.conda_env).exists()) error "Conda environment or YAML not found: ${params.conda_env}"
@@ -95,13 +110,13 @@ process QC_REVIEW {
   output:
   path 'qc_summary.tsv'
   path 'qc_mad_candidates.tsv'
-  path 'qc_thresholds.template.json'
+  path 'pipeline_settings.template.json'
   path 'all_cells_qc_metrics.tsv'
   path 'stage_qc_distributions.pdf'
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/04_qc_review.R")} qc_summary.tsv qc_mad_candidates.tsv qc_thresholds.template.json stage_qc_distributions.pdf ${metric_files.collect { shellQuote(it) }.join(' ')}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/04_qc_review.R")} qc_summary.tsv qc_mad_candidates.tsv pipeline_settings.template.json stage_qc_distributions.pdf ${params.peak_min} ${params.peak_max} ${metric_files.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -128,11 +143,11 @@ process QC_FILTER_DOUBLET {
   tag "$id"
   cpus 4
   memory '48 GB'
-  publishDir "${params.outdir}/${params.stage}/qc/filtered", mode: 'copy', pattern: '*.qc.tsv'
+  publishDir "${params.outdir}/${params.stage}/qc/filtered", mode: 'copy', pattern: '*.{qc.tsv,pdf}'
   input:
   tuple val(id), val(arc), val(mgatk), path(peaks), path(json), path(review)
   output:
-  tuple val(id), val(mgatk), path("${id}.rna.qc.rds"), path("${id}.atac.qc.rds"), path("${id}.qc.tsv")
+  tuple val(id), val(mgatk), path("${id}.rna.qc.rds"), path("${id}.atac.qc.rds"), path("${id}.qc.tsv"), path("${id}_Doublet.pdf")
   script:
   """
   # R source checksum: ${scriptsHash}
@@ -272,12 +287,12 @@ workflow {
   QC_REVIEW(QC_METRICS.out.map { id, tab, plot -> tab }.collect())
 
   if (params.phase == 'cluster_review') {
-    json_review = Channel.value(file(params.qc_json))
+    json_review = Channel.value(file(params.json))
     PRE_DOUBLET_REVIEW(rows.combine(COMMON_PEAKS.out).combine(json_review))
   }
 
   if (params.phase == 'analysis') {
-    json = Channel.value(file(params.qc_json))
+    json = Channel.value(file(params.json))
     reviewDir = params.cluster_review_dir ?: "${params.outdir}/${params.stage}/qc/cluster_review"
     reviewed = rows.combine(COMMON_PEAKS.out).combine(json).map { id, arc, mt, peaks, cfg ->
       def reviewFile = file("${reviewDir}/${id}.cluster_cells.tsv", checkIfExists: true)
@@ -285,9 +300,9 @@ workflow {
     }
     QC_FILTER_DOUBLET(reviewed)
     filtered = QC_FILTER_DOUBLET.out
-    MERGE_INTEGRATE_RNA(filtered.map { id, mt, rna, atac, report -> rna }.collect(), json)
-    MERGE_INTEGRATE_ATAC(filtered.map { id, mt, rna, atac, report -> atac }.collect(), json)
-    MGATK_METRICS(filtered.map { id, mt, rna, atac, report -> tuple(id, mt, rna) })
+    MERGE_INTEGRATE_RNA(filtered.map { id, mt, rna, atac, report, plot -> rna }.collect(), json)
+    MERGE_INTEGRATE_ATAC(filtered.map { id, mt, rna, atac, report, plot -> atac }.collect(), json)
+    MGATK_METRICS(filtered.map { id, mt, rna, atac, report, plot -> tuple(id, mt, rna) })
     WNN_STAGE(MERGE_INTEGRATE_RNA.out.stage, MERGE_INTEGRATE_ATAC.out.stage, json)
     ADD_MGATK(WNN_STAGE.out, MGATK_METRICS.out.collect())
     DEG_STAGE(ADD_MGATK.out[0])

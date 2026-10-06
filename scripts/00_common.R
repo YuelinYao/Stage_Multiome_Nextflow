@@ -70,11 +70,33 @@ qc_table <- function(sample, assays) {
     r[cells, qc_metric_names[1:4], drop = FALSE],
     a[cells, qc_metric_names[5:8], drop = FALSE], check.names = FALSE)
 }
-read_analysis_config <- function(file, sample = NULL) {
+# Independent defaults for each analysis step; used by the reader and template.
+pipeline_analysis_defaults <- function() list(
+  review_QC_cluster = list(RNA_dims = "1:20", algorithm = 3L, resolution = 2),
+  doublet = list(PC_dims = "1:20", algorithm = 3L, resolution = 2),
+  RNA_processing = list(RNA_dims = "1:20", RNA_umap_dims = "1:50",
+                        algorithm = 3L, resolution = 2, integrate_rna = TRUE),
+  ATAC_processing = list(ATAC_dims = "2:40", ATAC_integrate_dims = "1:40",
+                         algorithm = 3L, resolution = 2, integrate_atac = TRUE,
+                         min_cutoff = "q5"),
+  WNN = list(RNA_dims = "1:20", ATAC_dims = "2:40", algorithm = 3L, resolution = 2))
+read_pipeline_config <- function(file, sample = NULL) {
   cfg <- jsonlite::fromJSON(file, simplifyVector = FALSE)
-  if (is.null(cfg$thresholds)) stop_bad("QC JSON must have thresholds")
+  peaks <- cfg$peaks
+  if (is.null(peaks)) peaks <- list()
+  if (!is.list(peaks) || !all(names(peaks) %in% c("peak_min", "peak_max")))
+    stop_bad("Pipeline JSON peaks must contain peak_min and/or peak_max")
+  if (is.null(peaks$peak_min)) peaks$peak_min <- 20
+  if (is.null(peaks$peak_max)) peaks$peak_max <- 10000
+  for (value in peaks)
+    if (length(value) != 1L || !is.numeric(value) || !is.finite(value) ||
+        value < 0 || value != floor(value))
+      stop_bad("Peak widths must be nonnegative integers")
+  if (peaks$peak_min >= peaks$peak_max) stop_bad("peak_min must be less than peak_max")
+  cfg$peaks <- peaks
+  if (is.null(cfg$thresholds)) stop_bad("Pipeline JSON must have thresholds")
   if (!setequal(names(cfg$thresholds), qc_metric_names))
-    stop_bad("QC JSON thresholds must name exactly: ", paste(qc_metric_names, collapse = ", "))
+    stop_bad("Pipeline JSON thresholds must name exactly: ", paste(qc_metric_names, collapse = ", "))
   for (key in c("sample_overrides")) {
     value <- cfg[[key]]
     if (!is.null(value) && (!is.list(value) ||
@@ -99,63 +121,81 @@ read_analysis_config <- function(file, sample = NULL) {
     if (!is.null(bounds$min) && !is.null(bounds$max) && bounds$min > bounds$max)
       stop_bad("min exceeds max for ", nm)
   }
-  clustering <- cfg$clustering
-  # Older configurations did not have an RNA integration switch.
-  if (is.list(clustering) && is.null(clustering$integrate_rna)) clustering$integrate_rna <- TRUE
-  if (!is.list(clustering) || !setequal(names(clustering),
-      c("algorithm", "resolution", "RNA_dims", "RNA_umap_dims", "ATAC_dims",
-        "ATAC_integrate_dims", "integrate_rna", "integrate_atac", "min_cutoff")))
-    stop_bad("QC JSON clustering must contain algorithm, resolution, RNA_dims, ",
-             "RNA_umap_dims, ATAC_dims, ATAC_integrate_dims, integrate_rna, integrate_atac, min_cutoff")
-  algorithm <- clustering$algorithm
-  resolution <- clustering$resolution
-  if (length(algorithm) != 1L || !is.numeric(algorithm) ||
-      !is.finite(algorithm) || !(algorithm %in% 1:4))
-    stop_bad("clustering.algorithm must be 1, 2, 3, or 4")
-  if (length(resolution) != 1L || !is.numeric(resolution) ||
-      !is.finite(resolution) || resolution <= 0)
-    stop_bad("clustering.resolution must be a positive number")
-  if (length(clustering$integrate_atac) != 1L || !is.logical(clustering$integrate_atac) ||
-      is.na(clustering$integrate_atac)) stop_bad("integrate_atac must be true or false")
-  if (length(clustering$integrate_rna) != 1L || !is.logical(clustering$integrate_rna) ||
-      is.na(clustering$integrate_rna)) stop_bad("integrate_rna must be true or false")
-  cutoff <- clustering$min_cutoff
-  if (length(cutoff) != 1L || !is.numeric(cutoff) ||
-      !is.finite(cutoff) || cutoff < 0 || cutoff != floor(cutoff))
-    stop_bad("min_cutoff must be a nonnegative integer")
+  if (!is.null(cfg$clustering))
+    stop_bad("The shared clustering section has been replaced by review_QC_cluster, ",
+             "doublet, RNA_processing, ATAC_processing and WNN; use the new template")
   parse_dims <- function(x, name) {
     if (length(x) != 1L || !is.character(x) ||
         !grepl("^[1-9][0-9]*:[1-9][0-9]*$", x))
       stop_bad(name, " must be an inclusive range such as '1:20'")
     endpoints <- as.integer(strsplit(x, ":", fixed = TRUE)[[1]])
-    if (anyNA(endpoints) || endpoints[1] > endpoints[2] ||
-        endpoints[2] > 500L) stop_bad("Invalid dimension range for ", name)
+    if (anyNA(endpoints) || endpoints[1] > endpoints[2] || endpoints[2] > 500L)
+      stop_bad("Invalid dimension range for ", name)
     seq.int(endpoints[1], endpoints[2])
   }
+  defaults <- pipeline_analysis_defaults()
+  parse_section <- function(name, extra = character()) {
+    supplied <- cfg[[name]]
+    if (is.null(supplied)) supplied <- list()
+    if (!is.list(supplied) || (length(supplied) &&
+        (is.null(names(supplied)) || anyDuplicated(names(supplied)))) ||
+        !all(names(supplied) %in% c(names(defaults[[name]]), extra)))
+      stop_bad("Invalid settings in ", name)
+    result <- defaults[[name]]
+    for (key in names(supplied)) result[key] <- supplied[key]
+    if (length(result$algorithm) != 1L || !is.numeric(result$algorithm) ||
+        !is.finite(result$algorithm) || !(result$algorithm %in% 1:4))
+      stop_bad(name, ".algorithm must be 1, 2, 3, or 4")
+    result$algorithm <- as.integer(result$algorithm)
+    if (length(result$resolution) != 1L || !is.numeric(result$resolution) ||
+        !is.finite(result$resolution) || result$resolution <= 0)
+      stop_bad(name, ".resolution must be a positive number")
+    for (key in intersect(names(result), c("RNA_dims", "RNA_umap_dims", "ATAC_dims",
+                                         "ATAC_integrate_dims")))
+      result[[key]] <- parse_dims(result[[key]], paste0(name, ".", key))
+    for (key in intersect(names(result), c("integrate_rna", "integrate_atac")))
+      if (length(result[[key]]) != 1L || !is.logical(result[[key]]) || is.na(result[[key]]))
+        stop_bad(name, ".", key, " must be true or false")
+    if ("min_cutoff" %in% names(result)) {
+      cutoff <- result$min_cutoff
+      numeric_cutoff <- length(cutoff) == 1L && is.numeric(cutoff) &&
+        is.finite(cutoff) && cutoff >= 0 && cutoff == floor(cutoff)
+      percentile_cutoff <- length(cutoff) == 1L && is.character(cutoff) &&
+        !is.na(cutoff) && grepl("^q[0-9]+([.][0-9]+)?$", cutoff) &&
+        as.numeric(sub("^q", "", cutoff)) < 100
+      if (!numeric_cutoff && !percentile_cutoff)
+        stop_bad(name, ".min_cutoff must be a nonnegative integer or a percentile ",
+                 "string from q0 to below q100, such as 'q5'")
+      # Keep percentile strings intact for Signac::FindTopFeatures().
+      result$min_cutoff <- cutoff
+    }
+    result
+  }
   cfg$thresholds <- limits
-  cfg$clustering <- list(algorithm = as.integer(algorithm), resolution = resolution,
-    RNA_dims = parse_dims(clustering$RNA_dims, "RNA_dims"),
-    RNA_umap_dims = parse_dims(clustering$RNA_umap_dims, "RNA_umap_dims"),
-    ATAC_dims = parse_dims(clustering$ATAC_dims, "ATAC_dims"),
-    ATAC_integrate_dims = parse_dims(clustering$ATAC_integrate_dims, "ATAC_integrate_dims"),
-    integrate_rna = clustering$integrate_rna,
-    integrate_atac = clustering$integrate_atac, min_cutoff = as.integer(cutoff))
-  if (clustering$integrate_atac &&
-      max(cfg$clustering$ATAC_dims) > max(cfg$clustering$ATAC_integrate_dims))
-    stop_bad("ATAC_integrate_dims must include at least the largest ATAC_dims component")
-  doublet <- cfg$doublet
-  if (is.null(doublet)) doublet <- list()
-  if (!is.list(doublet) || !all(names(doublet) %in%
-      c("expected_rate", "sample_rates", "exclude_clusters"))) stop_bad("Invalid doublet settings")
+  for (name in c("review_QC_cluster", "RNA_processing", "ATAC_processing", "WNN"))
+    cfg[[name]] <- parse_section(name)
+  if (cfg$ATAC_processing$integrate_atac &&
+      !all(c(cfg$ATAC_processing$ATAC_dims, cfg$WNN$ATAC_dims) %in%
+           cfg$ATAC_processing$ATAC_integrate_dims))
+    stop_bad("ATAC_processing.ATAC_integrate_dims must cover ATAC_processing.ATAC_dims ",
+             "and WNN.ATAC_dims when ATAC integration is enabled")
+  doublet <- parse_section("doublet", c("expected_rate", "sample_rates", "exclude_clusters"))
+  doublet_dims <- parse_dims(if (is.null(doublet$PC_dims)) "1:20" else doublet$PC_dims,
+                            "doublet.PC_dims")
+  # DoubletFinder recomputes length(PCs) components internally, so require
+  # a contiguous range starting at PC1; our default PCA computes 50 PCs.
+  if (min(doublet_dims) != 1L || max(doublet_dims) > 50L)
+    stop_bad("doublet.PC_dims must start at 1 and end at or below 50")
   for (key in c("sample_rates", "exclude_clusters"))
     if (!is.null(doublet[[key]]) && !is.list(doublet[[key]]))
       stop_bad("doublet.", key, " must be an object keyed by sample ID")
-  rate <- if (is.null(doublet$expected_rate)) 0.05 else doublet$expected_rate
+  rate <- if (is.null(doublet$expected_rate)) "auto" else doublet$expected_rate
   if (!is.null(sample) && !is.null(doublet$sample_rates[[sample]]))
     rate <- doublet$sample_rates[[sample]]
   for (v in c(list(rate), doublet$sample_rates))
-    if (length(v) != 1L || !is.numeric(v) || !is.finite(v) || v <= 0 || v >= 1)
-      stop_bad("Doublet rates must be numbers between zero and one")
+    if (!(identical(v, "auto") ||
+          (length(v) == 1L && is.numeric(v) && is.finite(v) && v > 0 && v < 1)))
+      stop_bad("Doublet rates must be 'auto' or numbers between zero and one")
   for (v in doublet$exclude_clusters) {
     ids <- unlist(v, use.names = FALSE)
     if (length(ids) && (!is.character(ids) || anyNA(ids) || any(!nzchar(ids))))
@@ -163,19 +203,48 @@ read_analysis_config <- function(file, sample = NULL) {
   }
   excluded <- if (is.null(sample)) character() else
     as.character(unlist(doublet$exclude_clusters[[sample]], use.names = FALSE))
-  cfg$doublet <- list(expected_rate = rate, exclude_clusters = excluded)
+  cfg$doublet <- list(PC_dims = doublet_dims, algorithm = doublet$algorithm,
+    resolution = doublet$resolution, expected_rate = rate, exclude_clusters = excluded)
   cfg
 }
-preprocess_qc_rna <- function(obj, settings) {
+read_arc_detected_cells <- function(arc) {
+  file <- file.path(arc, "summary.csv")
+  summary <- read.csv(file, check.names = FALSE, colClasses = "character")
+  column <- "Estimated number of cells"
+  if (nrow(summary) != 1L || sum(names(summary) == column) != 1L)
+    stop_bad("Expected one row and one 'Estimated number of cells' column in ", file)
+  count <- suppressWarnings(as.numeric(gsub(",", "", trimws(summary[[column]]))))
+  if (length(count) != 1L || !is.finite(count) || count < 1 || count != floor(count))
+    stop_bad("Invalid Estimated number of cells in ", file)
+  count
+}
+nextgem_multiome_doublet_rate <- function(detected_cells) {
+  # Next GEM Multiome CG000338 Rev F, p22. Interpolate the published
+  # recovered-nuclei table; this estimates a multiplet rate, not a measured rate.
+  # https://cdn.10xgenomics.com/image/upload/v1666737555/support-documents/CG000338_ChromiumNextGEM_Multiome_ATAC_GEX_User_Guide_RevF.pdf
+  # page 22
+  recovered <- c(500, seq(1000, 10000, by = 1000))
+  rates <- c(0.004, 0.008, 0.016, 0.023, 0.031, 0.039, 0.046,
+             0.054, 0.062, 0.069, 0.077)
+  if (length(detected_cells) != 1L || !is.finite(detected_cells) ||
+      detected_cells < 500 || detected_cells > 10000)
+    stop_bad("Automatic Next GEM Multiome rate requires 500-10000 ARC detected cells; ",
+             "set an explicit doublet.expected_rate or sample_rates override")
+  approx(recovered, rates, xout = detected_cells)$y
+}
+preprocess_qc_rna <- function(obj, settings, default_pca = FALSE) {
   set.seed(123)
   DefaultAssay(obj) <- "RNA"
   obj <- NormalizeData(obj, verbose = FALSE)
   obj <- FindVariableFeatures(obj, nfeatures = 2000, verbose = FALSE)
   obj <- ScaleData(obj, verbose = FALSE)
-  pcs <- max(settings$RNA_dims)
+  pcs <- if (default_pca) 50L else max(settings$RNA_dims)
   if (min(ncol(obj), length(VariableFeatures(obj))) <= pcs)
     stop_bad("Insufficient cells/features for requested per-sample RNA PCA")
-  obj <- RunPCA(obj, npcs = pcs, verbose = FALSE)
+  obj <- if (default_pca) RunPCA(obj, verbose = FALSE) else
+    RunPCA(obj, npcs = pcs, verbose = FALSE)
+  if (ncol(Embeddings(obj, "pca")) < max(settings$RNA_dims))
+    stop_bad("Insufficient computed PCs for requested per-sample RNA dimensions")
   obj <- FindNeighbors(obj, dims = settings$RNA_dims, verbose = FALSE)
   FindClusters(obj, resolution = settings$resolution, algorithm = settings$algorithm,
     cluster.name = "pre_doublet_clusters", verbose = FALSE)
