@@ -20,7 +20,7 @@ message(sample, ": initial QC retained ", length(keep), " / ", nrow(tab),
         " cells (removed ", nrow(tab) - length(keep), ")")
 if (length(keep) < 100L) stop_bad("Fewer than 100 joint QC cells: ", sample)
 rna <- subset(assays$rna, cells = keep)
-# Use the saved barcode-to-cluster assignments from 05a. No preliminary
+# Use the saved barcode-to-cluster assignments from 05. No preliminary
 # clustering is repeated here: exclusions refer to the exact reviewed labels.
 reviewed_clusters <- read_reviewed_qc_clusters(args[8], sample, tab, colnames(rna))
 rna$reviewed_qc_cluster <- unname(reviewed_clusters[colnames(rna)])

@@ -1,5 +1,5 @@
-# Synthetic sparse mgatk counts exercise actual 06c and actual Seurat metadata
-# attachment in 09. ReadMGATK is mocked; production mgatk file parsing is not.
+# Synthetic sparse mgatk counts exercise actual 09 and actual Seurat metadata
+# attachment in 13. ReadMGATK is mocked; production mgatk file parsing is not.
 suppressPackageStartupMessages({ library(Matrix); library(Seurat) })
 env <- new.env(parent = globalenv())
 for (expr in parse('scripts/00_common.R'))
@@ -41,7 +41,7 @@ run_checks <- function() {
   input <- file.path(task_dir, 'cells.rds'); output <- file.path(task_dir, 'metrics.tsv')
   saveRDS(obj, input)
   env$ReadMGATK <- function(dir) mgatk
-  expressions <- parse('scripts/06c_mgatk_metrics.R')[-(1:2)]
+  expressions <- parse('scripts/09_mgatk_metrics.R')[-(1:2)]
   run <- function() {
     env$args <- c('001', input, 'mock', output)
     for (expr in expressions) eval(expr, env)
@@ -74,22 +74,77 @@ run_checks <- function() {
   # Every per-site fraction follows its stated allele definition.
   for (pos in positions) stopifnot(tab[[paste0('Heteroplasmy_', pos)]][1] == 0.7)
 
-  # Actual 09 must attach the expanded table by cell ID, not input row order.
+  # Actual 13 must attach the expanded table by cell ID, not input row order.
   tab <- tab[c(4, 2, 1, 3), ]; env$write_tsv(tab, output)
   final <- file.path(task_dir, 'wnn_mgatk.rds'); combined <- file.path(task_dir, 'combined.tsv')
   env$args <- c(input, final, combined, output)
-  for (expr in parse('scripts/09_add_mgatk.R')[-(1:2)]) eval(expr, env)
+  for (expr in parse('scripts/13_add_mgatk.R')[-(1:2)]) eval(expr, env)
   attached <- readRDS(final)
   stopifnot(identical(colnames(attached), colnames(obj)),
     identical(as.character(attached$sample_id), rep('001', ncol(obj))),
     attached$Heteroplasmy_all_5019[1] == 0.7, is.na(attached$Heteroplasmy_all_5019[2]))
   attachment_args <- env$args
+  # Step 13 imports both copy-number sources without disturbing heteroplasmy.
+  copy_file <- file.path(task_dir, '001.mtDNA_copy_number.tsv')
+  copies <- data.frame(sample_id = '001', barcode = c('low', 'covered', 'other_only'),
+    mtDNA_CN_normalised = c(NA, 200, 60),
+    mtDNA_CN_normalised_enriched = c(20, 800, NA),
+    qc_status = c('low_mitochondrial_coverage', 'pass', 'pass'),
+    qc_status_enriched = c('pass', 'pass', 'low_mitochondrial_coverage'))
+  env$write_tsv(copies, copy_file)
+  attach_copies <- function(files = copy_file) {
+    env$args <- c(attachment_args, '--copy-number-files', files)
+    for (expr in parse('scripts/13_add_mgatk.R')[-(1:2)]) eval(expr, env)
+    readRDS(final)
+  }
+  annotated <- attach_copies()
+  stopifnot(identical(as.numeric(annotated$mtDNA_CN_normalised), c(200, NA_real_, 60, NA_real_)),
+    identical(as.numeric(annotated$mtDNA_CN_normalised_enriched), c(800, NA_real_, NA_real_, 20)),
+    identical(unname(annotated$mtDNA_CN_matched), c(TRUE, FALSE, TRUE, TRUE)),
+    annotated$mtDNA_CN_qc_status[4] == 'low_mitochondrial_coverage',
+    annotated$Heteroplasmy_all_5019[1] == 0.7,
+    identical(as.numeric(read.delim(combined)$mtDNA_CN_normalised), as.numeric(annotated$mtDNA_CN_normalised)))
+  # All-missing estimates must still be numeric metadata.
+  all_missing <- copies; all_missing$mtDNA_CN_normalised_enriched <- NA_real_
+  env$write_tsv(all_missing, copy_file)
+  annotated <- attach_copies()
+  stopifnot(is.numeric(annotated$mtDNA_CN_normalised_enriched),
+    all(is.na(annotated$mtDNA_CN_normalised_enriched)))
+  env$write_tsv(copies, copy_file)
+  expect_error(attach_copies(c(copy_file, copy_file)))
+  bad_copies <- copies; bad_copies$sample_id <- 'different_sample'
+  env$write_tsv(bad_copies, copy_file); expect_error(attach_copies())
+  bad_copies <- copies; bad_copies$mtDNA_CN_normalised[1] <- -1
+  env$write_tsv(bad_copies, copy_file); expect_error(attach_copies())
+  bad_copies <- copies; bad_copies$barcode[1] <- NA_character_
+  env$write_tsv(bad_copies, copy_file); expect_error(attach_copies())
+  # Reused barcodes across samples must resolve using BOTH identifiers.
+  second_obj <- obj
+  colnames(second_obj) <- paste0('second_', bcs)
+  second_obj$sample_id <- '002'
+  stage_obj <- merge(obj, second_obj)
+  stage_input <- file.path(task_dir, 'stage.rds'); saveRDS(stage_obj, stage_input)
+  second_tab <- tab; second_tab$cell_id <- paste0('second_', second_tab$barcode)
+  second_tab$sample_id <- '002'
+  second_metrics <- file.path(task_dir, 'second_metrics.tsv')
+  env$write_tsv(second_tab, second_metrics)
+  second_copies <- data.frame(sample_id = '002', barcode = 'covered', mtDNA_CN_normalised = 123)
+  second_file <- file.path(task_dir, '002.mtDNA_copy_number.tsv')
+  env$write_tsv(second_copies, second_file); env$write_tsv(copies, copy_file)
+  env$args <- c(stage_input, final, combined, output, second_metrics,
+    '--copy-number-files', second_file, copy_file)
+  for (expr in parse('scripts/13_add_mgatk.R')[-(1:2)]) eval(expr, env)
+  annotated <- readRDS(final)
+  stopifnot(annotated[[]]['alias_covered', 'mtDNA_CN_normalised'] == 200,
+    annotated[[]]['second_covered', 'mtDNA_CN_normalised'] == 123,
+    is.na(annotated[[]]['second_covered', 'mtDNA_CN_normalised_enriched']))
+  env$args <- attachment_args
   # Malformed tables must fail clearly instead of attaching partial metadata.
   bad <- tab; bad$cell_id[1] <- NA_character_; env$write_tsv(bad, output)
-  expect_error(for (expr in parse('scripts/09_add_mgatk.R')[-(1:2)]) eval(expr, env))
+  expect_error(for (expr in parse('scripts/13_add_mgatk.R')[-(1:2)]) eval(expr, env))
   bad <- tab; bad$Heteroplasmy_all_5019 <- NULL; env$write_tsv(bad, output)
   env$args <- attachment_args
-  expect_error(for (expr in parse('scripts/09_add_mgatk.R')[-(1:2)]) eval(expr, env))
+  expect_error(for (expr in parse('scripts/13_add_mgatk.R')[-(1:2)]) eval(expr, env))
 
   original <- mgatk
   mgatk$refallele$ref[mgatk$refallele$pos == 15200] <- 'C'

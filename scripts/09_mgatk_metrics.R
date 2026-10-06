@@ -5,7 +5,7 @@ args <- commandArgs(trailingOnly = TRUE)
 # Usage: sample_id retained_rna.rds mgatk_enriched_final_dir sample.mtDNA.tsv
 # The 5019-associated variant panel follows YY_06_mgatk_heteroplasmy.R.
 # Heteroplasmy_<position> and Depth_<position> use its metadata column names.
-# This task computes per-cell metrics; step 09 attaches them to the WNN object.
+# This task computes per-cell metrics; step 13 attaches them to the WNN object.
 stopifnot(length(args) == 4L)
 sample <- args[1]; obj <- readRDS(args[2]); dir <- args[3]; outfile <- args[4]
 m <- ReadMGATK(dir)

@@ -1,4 +1,4 @@
-# Validate the 05a -> 05b handoff using real Seurat objects and saved QC tables.
+# Validate the 05 -> 06 handoff using real Seurat objects and saved QC tables.
 # No Signac or DoubletFinder required. Run from the repository root:
 # Rscript tests/reviewed_clusters.R
 suppressPackageStartupMessages(library(Seurat))

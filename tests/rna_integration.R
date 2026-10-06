@@ -1,4 +1,4 @@
-# Exercise the actual 06a script, including SCT and CCA integration, with
+# Exercise the actual 07 script, including SCT and CCA integration, with
 # synthetic RNA counts. Only cell-cycle/sex annotation is stubbed because
 # cellXY is unavailable locally. Run from the repository root.
 suppressPackageStartupMessages(library(Seurat))
@@ -7,7 +7,7 @@ for (expr in parse('scripts/00_common.R'))
   if (is.call(expr) && identical(expr[[1]], as.name('<-'))) eval(expr, env)
 run_checks <- function() {
   original_dir <- getwd()
-  script <- normalizePath('scripts/06a_preprocess_rna.R')
+  script <- normalizePath('scripts/07_preprocess_rna.R')
   cfg <- jsonlite::fromJSON('examples/pipeline_settings.example.json', simplifyVector = FALSE)
   task_dir <- tempfile(); dir.create(task_dir)
   on.exit({ setwd(original_dir); unlink(task_dir, recursive = TRUE) }, add = TRUE)

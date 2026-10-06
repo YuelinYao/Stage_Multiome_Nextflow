@@ -1,6 +1,6 @@
 # Run from the repository root; no Signac or real sequencing inputs required.
 for (f in list.files("scripts", pattern = "[.]R$", full.names = TRUE))
-  if (!grepl("/11_", f)) parse(f)
+  parse(f)
 env <- new.env(parent = globalenv())
 # Load pure helpers without loading the unavailable scientific dependencies.
 for (expr in parse("scripts/00_common.R")) {
@@ -86,6 +86,25 @@ limits <- setNames(lapply(env$qc_metric_names, function(x) list(min = 1, max = 2
 for (metric in env$qc_metric_names) tab[[metric]] <- c(1, 2, 0, NA, Inf)
 stopifnot(identical(env$apply_qc(tab, limits), c("lower", "upper")))
 
+# Exercise both Signac FeatureMatrix signatures, absent-chromosome padding
+# and independent row/cell reordering with real sparse matrices and GRanges.
+peaks <- GenomicRanges::GRanges(c("chr1", "chr2", "chr1"),
+  IRanges::IRanges(c(1, 101, 201), width = 50))
+counts <- Matrix::sparseMatrix(i = c(1, 2), j = c(1, 2), x = c(7, 3),
+  dims = c(2, 2), dimnames = list(c("chr1-201-250", "chr1-1-50"), c("B", "A")))
+# This exact older signature catches unsupported-argument failures.
+env$FeatureMatrix <- function(fragments, features, cells, sep) counts
+common <- env$count_common_peaks(NULL, peaks, c("A", "B", "C"))
+stopifnot(identical(dimnames(common), list(c("chr1-1-50", "chr2-101-150", "chr1-201-250"),
+  c("A", "B", "C"))), common[1, "A"] == 3, common[3, "B"] == 7,
+  sum(common[2, ]) == 0, sum(common[, "C"]) == 0, inherits(common, "sparseMatrix"))
+env$FeatureMatrix <- function(fragments, features, cells, sep, keep_all_features) {
+  stopifnot(keep_all_features); counts
+}
+stopifnot(identical(common, env$count_common_peaks(NULL, peaks, c("A", "B", "C"))))
+rownames(counts)[1] <- "unexpected-peak"
+expect_error(env$count_common_peaks(NULL, peaks, c("A", "B", "C")))
+
 # Execute the mgatk extractor with a mock ReadMGATK and a plain input object.
 obj_file <- tempfile(); out_file <- tempfile()
 obj <- matrix(0, 1, 2, dimnames = list("gene", c("sample_present", "sample_missing")))
@@ -106,7 +125,7 @@ env$ReadMGATK <- function(dir) {
     counts = counts, depth = data.frame(depth = 100, row.names = "present"))
 }
 env$args <- c("sample", obj_file, "mock", out_file)
-exprs <- parse("scripts/06c_mgatk_metrics.R")
+exprs <- parse("scripts/09_mgatk_metrics.R")
 for (expr in exprs[-(1:2)]) eval(expr, env)
 result <- read.delim(out_file)
 stopifnot(result$Heteroplasmy_5019[1] == 0.4, result$Depth_5019[1] == 10,

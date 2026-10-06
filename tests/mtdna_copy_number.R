@@ -1,6 +1,6 @@
 # Synthetic integration tests. Run from the repository root with:
 # Rscript tests/mtdna_copy_number.R
-source("scripts/11_estimate_mtdna_copy_number.R")
+source("scripts/10_estimate_mtdna_copy_number.R")
 for (pkg in c("Rsamtools", "GenomicRanges", "GenomicAlignments"))
   stopifnot(requireNamespace(pkg, quietly = TRUE))
 
@@ -53,6 +53,45 @@ run_tests <- function() {
   stopifnot(file.exists(paste0(prefix, ".settings.txt")),
     identical(read_bed(paste0(prefix, ".nuclear_reference.bed"), c(chr1 = 2000)),
               read_bed(bed, c(chr1 = 2000))))
+  # Two sources share one nuclear BAM scan, while barcode alignment and
+  # mitochondrial coverage checks remain independent for each source.
+  enriched <- file.path(root, "mgatk_enriched"); dir.create(enriched)
+  enriched_file <- file.path(enriched, "sample.depthTable.txt")
+  writeLines(c("CELL3\t60", "ATAC2\t30", "CELL1\t40"), enriched_file)
+  original_counter <- nuclear_coverage
+  on.exit(assign("nuclear_coverage", original_counter, envir = .GlobalEnv), add = TRUE)
+  bam_calls <- 0L
+  assign("nuclear_coverage", function(...) {
+    bam_calls <<- bam_calls + 1L
+    original_counter(...)
+  }, envir = .GlobalEnv)
+  dual <- main(c(args, "--mgatk-enriched-dir", enriched))
+  stopifnot(bam_calls == 1L,
+    identical(dual$barcode, c("CELL1", "CELL2", "CELL3")),
+    dual$mtDNA_CN_normalised[1] == 200,
+    dual$mtDNA_CN_normalised_enriched[1] == 80,
+    is.na(dual$mtDNA_CN_normalised[2]), dual$mtDNA_CN_normalised_enriched[2] == 60,
+    dual$qc_status_enriched[3] == "zero_nuclear_coverage",
+    is.na(dual$mtDNA_CN_normalised_enriched[3]),
+    any(grepl(enriched_file, readLines(paste0(prefix, ".settings.txt")), fixed = TRUE)))
+  writeLines("CELL1\t5", enriched_file)
+  low_enriched <- main(c(args, "--mgatk-enriched-dir", enriched))
+  stopifnot(low_enriched$mtDNA_CN_normalised[1] == 200,
+    low_enriched$mtDNA_CN_normalised_enriched_raw[1] == 10,
+    is.na(low_enriched$mtDNA_CN_normalised_enriched[1]),
+    low_enriched$qc_status_enriched[1] == "low_mitochondrial_coverage")
+  # A completely unmatched source stays missing without losing the other ratio.
+  writeLines("OTHER\t100", enriched_file)
+  unmatched <- main(c(args, "--mgatk-enriched-dir", enriched))
+  stopifnot(unmatched$mtDNA_CN_normalised[1] == 200,
+    all(is.na(unmatched$mtDNA_CN_normalised_enriched)),
+    all(unmatched$qc_status_enriched == "missing_mgatk"))
+  writeLines("CELL1\t40", enriched_file)
+  enriched_args <- args[-c(match("--mgatk-dir", args), match("--mgatk-dir", args) + 1L)]
+  enriched_only <- main(c(enriched_args, "--mgatk-enriched-dir", enriched))
+  stopifnot(enriched_only$mtDNA_CN_normalised_enriched[1] == 80,
+    !"mtDNA_CN_normalised" %in% names(enriched_only))
+  assign("nuclear_coverage", original_counter, envir = .GlobalEnv)
   # Low coverage is flagged separately from missing measurements. Raw ratios
   # are retained, while the qualified estimate is suppressed.
   low_args <- args
@@ -92,6 +131,23 @@ run_tests <- function() {
             automatic$nuclear_aligned_bases[1] == 10,
             automatic$nuclear_mean_depth[1] == 0.02,
             automatic$mtDNA_copy_estimate[1] == 10000)
+  # Exercise the default blacklist route with a synthetic bundled GRanges.
+  # Signac is unavailable locally; BAM reading/counting remain real.
+  original_loader <- load_signac_mm10_blacklist
+  on.exit(assign("load_signac_mm10_blacklist", original_loader, envir = .GlobalEnv), add = TRUE)
+  calls <- 0L
+  assign("load_signac_mm10_blacklist", function() {
+    calls <<- calls + 1L
+    GenomicRanges::GRanges(c("chr1", "chr2"), IRanges::IRanges(c(501, 1), c(1000, 500)))
+  }, envir = .GlobalEnv)
+  default_args <- selected_args[-c(match("--blacklist", selected_args),
+                                  match("--blacklist", selected_args) + 1L)]
+  bundled <- main(default_args)
+  stopifnot(identical(bundled, automatic), calls == 1L,
+    any(grepl("Signac::blacklist_mm10", readLines(paste0(prefix, ".settings.txt")), fixed = TRUE)))
+  # Explicit BEDs and supplied reference sets must not load Signac.
+  main(selected_args); main(args)
+  stopifnot(calls == 1L)
   expect_error <- function(expr) {
     stopifnot(inherits(tryCatch(force(expr), error = identity), "error"))
   }

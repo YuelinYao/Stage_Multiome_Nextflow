@@ -20,6 +20,27 @@ annotation_mm10 <- function() {
   GenomeInfoDb::genome(x) <- "mm10"
   x
 }
+# Signac 1.14 (the exported environment) does not accept keep_all_features.
+# Older FeatureMatrix versions omit peaks on absent chromosomes. Restore those
+# rows as sparse zeros, and impose the common BED's exact row/cell order.
+count_common_peaks <- function(fragments, peaks, cells) {
+  features <- paste(as.character(GenomicRanges::seqnames(peaks)),
+    IRanges::start(peaks), IRanges::end(peaks), sep = "-")
+  if (!length(features) || anyDuplicated(features) || !length(cells) || anyDuplicated(cells))
+    stop_bad("Common peaks and cells must be nonempty and unique")
+  arguments <- list(fragments = fragments, features = peaks, cells = cells, sep = c("-", "-"))
+  if ("keep_all_features" %in% names(formals(FeatureMatrix))) arguments$keep_all_features <- TRUE
+  mat <- do.call(FeatureMatrix, arguments)
+  if (is.null(rownames(mat)) || is.null(colnames(mat)) ||
+      anyDuplicated(rownames(mat)) || anyDuplicated(colnames(mat)) ||
+      any(!rownames(mat) %in% features) || any(!colnames(mat) %in% cells))
+    stop_bad("Unexpected peak/cell identifiers returned by FeatureMatrix")
+  # Sparse coordinate remapping preserves counts without expanding the matrix.
+  entries <- Matrix::summary(methods::as(mat, "dgCMatrix"))
+  Matrix::sparseMatrix(i = match(rownames(mat), features)[entries$i],
+    j = match(colnames(mat), cells)[entries$j], x = entries$x,
+    dims = c(length(features), length(cells)), dimnames = list(features, cells))
+}
 make_assays <- function(arc, bed) {
   x <- read_arc(arc)
   cells <- intersect(colnames(x$`Gene Expression`), colnames(x$Peaks))
@@ -31,8 +52,7 @@ make_assays <- function(arc, bed) {
   frag <- file.path(arc, "atac_fragments.tsv.gz")
   peaks <- rtracklayer::import(bed, format = "BED")
   fragments <- CreateFragmentObject(frag, cells = cells)
-  mat <- FeatureMatrix(fragments = fragments, features = peaks, cells = cells,
-                       keep_all_features = TRUE)
+  mat <- count_common_peaks(fragments, peaks, cells)
   atac <- CreateSeuratObject(CreateChromatinAssay(mat, fragments = fragments,
                               annotation = annotation_mm10(), genome = "mm10"),
                             assay = "ATAC", min.cells = 0, min.features = 0)

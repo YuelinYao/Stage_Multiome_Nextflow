@@ -46,7 +46,7 @@ run_checks <- function() {
                          algorithm = algorithm, ...)
   }
   env$args <- c(file.path(task_dir, 'wnn.rds'), 'json', rna_file, atac_file)
-  for (expr in parse('scripts/08_wnn_stage.R')[-(1:2)]) eval(expr, env)
+  for (expr in parse('scripts/12_wnn_stage.R')[-(1:2)]) eval(expr, env)
   result <- readRDS(env$args[1])
   stopifnot(identical(colnames(result), cells), 'wsnn_clusters' %in% colnames(result[[]]),
             identical(result@misc$wnn_reductions, c(RNA = 'integrated.cca', ATAC = 'lsi')))
@@ -55,7 +55,7 @@ run_checks <- function() {
   for (switches in list(c(FALSE, FALSE), c(FALSE, TRUE), c(TRUE, TRUE))) {
     cfg$RNA_processing$integrate_rna <- switches[1]
     cfg$ATAC_processing$integrate_atac <- switches[2]
-    for (expr in parse('scripts/08_wnn_stage.R')[-(1:2)]) eval(expr, env)
+    for (expr in parse('scripts/12_wnn_stage.R')[-(1:2)]) eval(expr, env)
     result <- readRDS(env$args[1])
     stopifnot(identical(result@misc$wnn_reductions,
       c(RNA = if (switches[1]) 'integrated.cca' else 'rna_merged_pca',
@@ -67,11 +67,11 @@ run_checks <- function() {
   expect_error <- function(expr) {
     stopifnot(inherits(tryCatch(force(expr), error = identity), 'error'))
   }
-  expect_error(for (expr in parse('scripts/08_wnn_stage.R')[-(1:2)]) eval(expr, env))
+  expect_error(for (expr in parse('scripts/12_wnn_stage.R')[-(1:2)]) eval(expr, env))
   saveRDS(atac[, rev(cells)], atac_file)
   # The standalone legacy combiner also retains the corrected ATAC reduction.
   env$args <- c(rna_file, atac_file, file.path(task_dir, 'combined.rds'))
-  for (expr in parse('scripts/07_combine_modalities.R')[-(1:2)]) eval(expr, env)
+  for (expr in parse('scripts/11_combine_modalities.R')[-(1:2)]) eval(expr, env)
   combined <- readRDS(env$args[3])
   stopifnot(identical(colnames(combined), cells),
             'integrated_lsi' %in% Reductions(combined))

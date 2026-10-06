@@ -1,4 +1,4 @@
-# Test actual 06b routing and real Seurat reciprocal-LSI/embedding integration.
+# Test actual 08 routing and real Seurat reciprocal-LSI/embedding integration.
 # Signac preprocessing is replaced with synthetic feature/LSI preparation;
 # this does not validate ChromatinAssay fragment handling or Signac itself.
 suppressPackageStartupMessages(library(Seurat))
@@ -6,7 +6,7 @@ env <- new.env(parent = globalenv())
 for (expr in parse('scripts/00_common.R'))
   if (is.call(expr) && identical(expr[[1]], as.name('<-'))) eval(expr, env)
 run_checks <- function() {
-  original_dir <- getwd(); script <- normalizePath('scripts/06b_preprocess_atac.R')
+  original_dir <- getwd(); script <- normalizePath('scripts/08_preprocess_atac.R')
   cfg <- jsonlite::fromJSON('examples/pipeline_settings.example.json', simplifyVector = FALSE)
   task_dir <- tempfile(); dir.create(task_dir)
   on.exit({ setwd(original_dir); unlink(task_dir, recursive = TRUE) }, add = TRUE)

@@ -5,7 +5,8 @@
 # This is an assay-dependent estimate, not an independently calibrated molecule count.
 # The script is standalone: it is NOT automatically run by main.nf.
 # Run with --help for arguments. All BED files use 0-based, end-exclusive coordinates.
-# Required R packages are already listed in environment.yml; Seurat/Signac are not needed.
+# Required R packages are listed in environment.yml. Signac is needed only
+# when selecting bins with its default blacklist; a custom BED avoids that dependency.
 
 fail <- function(...) stop(..., call. = FALSE)
 
@@ -22,6 +23,19 @@ read_bed <- function(path, lengths) {
       any(!tab$chrom %in% names(lengths)) || any(tab$end > lengths[tab$chrom]))
     fail("BED coordinates/contigs disagree with BAM header: ", path)
   GenomicRanges::GRanges(tab$chrom, IRanges::IRanges(tab$start + 1, tab$end))
+}
+
+# Load the bundled GRanges directly: no download or intermediate BED is needed.
+# Keep a custom --blacklist option because newer Signac releases may remove
+# this deprecated dataset. A supplied reference BED bypasses blacklist loading.
+load_signac_mm10_blacklist <- function() {
+  if (!requireNamespace("Signac", quietly = TRUE))
+    fail("Install Signac for its mm10 blacklist, or supply --blacklist /path/to/mm10-blacklist.bed")
+  blacklist <- tryCatch(getExportedValue("Signac", "blacklist_mm10"),
+    error = function(e) fail("Signac::blacklist_mm10 is unavailable; supply --blacklist /path/to/mm10-blacklist.bed"))
+  if (!inherits(blacklist, "GRanges") || !length(blacklist))
+    fail("Signac::blacklist_mm10 must contain genomic ranges")
+  blacklist
 }
 
 # Score only full-width autosomal bins. Sex chromosomes are excluded so a
@@ -139,14 +153,34 @@ nuclear_coverage <- function(path, reference, cells, barcode_lookup, mapq, baseq
   list(bases = totals, reads = reads)
 }
 
+# Each source is aligned independently to the retained canonical barcodes.
+# Depth is already a genome-wide mean: do not divide by mtDNA length again.
+read_mgatk_depth <- function(directory, cells, lookup) {
+  if (!dir.exists(directory)) fail("Missing mgatk directory: ", directory)
+  files <- list.files(directory, pattern = "[.]depthTable[.]txt$", full.names = TRUE)
+  if (length(files) != 1L) fail("Expected exactly one mgatk depthTable.txt in: ", directory)
+  depth <- read.table(files, header = FALSE, colClasses = c("character", "numeric"))
+  if (ncol(depth) != 2L || anyDuplicated(depth[[1]]) || anyNA(depth) ||
+      any(!nzchar(depth[[1]])) || any(!is.finite(depth[[2]]) | depth[[2]] < 0))
+    fail("Invalid mgatk depth table: ", files)
+  canonical <- unname(lookup[depth[[1]]])
+  matched <- !is.na(canonical) & canonical %in% cells
+  if (anyDuplicated(canonical[matched])) fail("Multiple mgatk rows map to the same retained cell: ", files)
+  # Unmatched cells remain NA, including when this entire source lacks matches.
+  # This must not suppress a valid estimate from the other source.
+  list(depth = depth[[2]][matched][match(cells, canonical[matched])], file = files)
+}
+
 main <- function(args) {
   help <- paste(
-    "Usage: Rscript scripts/11_estimate_mtdna_copy_number.R --sample ID",
+    "Usage: Rscript scripts/10_estimate_mtdna_copy_number.R --sample ID",
     "  --bam ARC/outs/atac_possorted_bam.bam --barcodes retained_barcodes.txt",
-    "  --mgatk-dir MGATK/final --out-prefix results/ID",
+    "  --mgatk-dir MGATK/final --mgatk-enriched-dir MGATK_ENRICHED/final",
+    "  --out-prefix results/ID (provide either or both mgatk directories)",
     "  (--reference-bed shared_reference.bed OR",
-    "   --fragments ARC/outs/atac_fragments.tsv.gz --blacklist mm10-blacklist.bed)",
+    "   --fragments ARC/outs/atac_fragments.tsv.gz)",
     "Optional: --barcode-map ARC/outs/per_barcode_metrics.csv",
+    "  --blacklist mm10-blacklist.bed (default: Signac::blacklist_mm10)",
     "  --bin-size 500 --quantile 0.985 --mapq 30 --baseq 20",
     "  --ploidy 2 --min-nuclear-bases 1000 --min-mt-depth 10",
     "  --keep-duplicates true|false (default false)",
@@ -159,12 +193,16 @@ main <- function(args) {
   opts <- as.list(args[seq(2L, length(args), 2L)]); names(opts) <- keys
   defaults <- list("bin-size" = "500", quantile = "0.985", mapq = "30", baseq = "20",
     ploidy = "2", "min-nuclear-bases" = "1000", "min-mt-depth" = "10", "keep-duplicates" = "false")
-  allowed <- c(names(defaults), "sample", "bam", "barcodes", "mgatk-dir", "out-prefix",
+  allowed <- c(names(defaults), "sample", "bam", "barcodes", "mgatk-dir", "mgatk-enriched-dir", "out-prefix",
                "reference-bed", "fragments", "blacklist", "barcode-map")
   if (any(!keys %in% allowed)) fail("Unknown argument: ", paste(setdiff(keys, allowed), collapse = ", "))
   for (key in names(defaults)) if (is.null(opts[[key]])) opts[[key]] <- defaults[[key]]
-  for (key in c("sample", "bam", "barcodes", "mgatk-dir", "out-prefix"))
+  for (key in c("sample", "bam", "barcodes", "out-prefix"))
     if (is.null(opts[[key]]) || !nzchar(opts[[key]])) fail("Required: --", key)
+  source_keys <- c(mgatk = "mgatk-dir", enriched = "mgatk-enriched-dir")
+  source_keys <- source_keys[vapply(source_keys, function(key) !is.null(opts[[key]]), logical(1))]
+  if (!length(source_keys)) fail("Provide --mgatk-dir and/or --mgatk-enriched-dir")
+  for (key in source_keys) if (!nzchar(opts[[key]])) fail("Empty --", key)
   for (key in setdiff(names(defaults), "keep-duplicates")) {
     opts[[key]] <- suppressWarnings(as.numeric(opts[[key]]))
     if (length(opts[[key]]) != 1L || !is.finite(opts[[key]]) || opts[[key]] < 0) fail("Invalid --", key)
@@ -196,47 +234,60 @@ main <- function(args) {
       lookup[map$atac_barcode[i]] <- map$barcode[i]
     }
   }
+  blacklist_source <- "not applied: supplied reference BED"
   reference <- if (!is.null(opts[["reference-bed"]])) {
     read_bed(opts[["reference-bed"]], lengths)
   } else {
-    if (is.null(opts$fragments) || is.null(opts$blacklist)) fail("Provide reference BED or fragments AND blacklist")
+    if (is.null(opts$fragments)) fail("Provide --reference-bed or --fragments")
+    blacklist <- if (!is.null(opts$blacklist)) {
+      blacklist_source <- normalizePath(opts$blacklist, mustWork = TRUE)
+      read_bed(opts$blacklist, lengths)
+    } else {
+      blacklist_source <- "Signac::blacklist_mm10"
+      bundled <- load_signac_mm10_blacklist()
+      # The bundled dataset covers the complete genome, while the BAM may
+      # contain a subset of its contigs. Unused contigs cannot overlap our bins.
+      bundled[as.character(GenomicRanges::seqnames(bundled)) %in% names(lengths)]
+    }
     # Fragment barcodes may be canonical ARC IDs or their ATAC aliases.
     # Apply the same accepted IDs used for BAM and mgatk depth matching.
-    select_reference(opts$fragments, names(lookup), lengths, read_bed(opts$blacklist, lengths),
+    select_reference(opts$fragments, names(lookup), lengths, blacklist,
                      opts[["bin-size"]], opts$quantile)
   }
   if (any(!grepl("^chr([1-9]|1[0-9])$", as.character(GenomicRanges::seqnames(reference)))))
     fail("Reference BED must contain mouse autosomes chr1-chr19 only")
   reference <- GenomicRanges::sort(GenomicRanges::reduce(reference, ignore.strand = TRUE))
   reference_bp <- sum(IRanges::width(reference))
-  # Use the genome-wide depth table, not coverage at m.5019. Missing mgatk cells
-  # stay NA: lack of a measurement must never be interpreted as zero copies.
-  depth_files <- list.files(opts[["mgatk-dir"]], pattern = "[.]depthTable[.]txt$", full.names = TRUE)
-  if (length(depth_files) != 1L) fail("Expected exactly one mgatk depthTable.txt")
-  depth <- read.table(depth_files, header = FALSE, colClasses = c("character", "numeric"))
-  if (ncol(depth) != 2L || anyDuplicated(depth[[1]]) || anyNA(depth) ||
-      any(!is.finite(depth[[2]]) | depth[[2]] < 0)) fail("Invalid mgatk depth table")
-  # Apply the same explicit translation if mgatk was run with ATAC barcodes.
-  canonical_mt <- unname(lookup[depth[[1]]])
-  matched <- !is.na(canonical_mt) & canonical_mt %in% cells
-  if (anyDuplicated(canonical_mt[matched])) fail("Multiple mgatk rows map to the same retained cell")
-  mt_depth <- depth[[2]][matched][match(cells, canonical_mt[matched])]
-  if (all(is.na(mt_depth))) fail("No retained barcodes match mgatk depth table")
+  # Read both mitochondrial sources before scanning the nuclear BAM once.
+  # Both ratios use exactly the same retained cells and nuclear reference.
+  depths <- lapply(source_keys, function(key) read_mgatk_depth(opts[[key]], cells, lookup))
   measured <- nuclear_coverage(opts$bam, reference, cells, lookup, opts$mapq, opts$baseq,
                                opts[["keep-duplicates"]] == "true")
   if (!sum(measured$bases)) fail("No nuclear bases matched: check CB tags, mapping and reference BED")
   nuclear_depth <- unname(measured$bases) / reference_bp
-  estimate <- ifelse(nuclear_depth > 0, opts$ploidy * mt_depth / nuclear_depth, NA_real_)
-  status <- ifelse(is.na(mt_depth), "missing_mgatk",
-    ifelse(measured$bases == 0, "zero_nuclear_coverage",
-      ifelse(measured$bases < opts[["min-nuclear-bases"]], "low_nuclear_coverage",
-        ifelse(mt_depth < opts[["min-mt-depth"]], "low_mitochondrial_coverage", "pass"))))
   out <- data.frame(sample_id = opts$sample, barcode = cells,
     nuclear_reference_bp = reference_bp, nuclear_aligned_bases = unname(measured$bases),
     nuclear_reads_with_counted_bases = unname(measured$reads), nuclear_mean_depth = nuclear_depth,
-    mitochondrial_mean_depth = mt_depth, assumed_nuclear_ploidy = opts$ploidy,
-    mtDNA_copy_estimate_raw = estimate,
-    mtDNA_copy_estimate = ifelse(status == "pass", estimate, NA_real_), qc_status = status)
+    assumed_nuclear_ploidy = opts$ploidy)
+  for (source in names(depths)) {
+    mt_depth <- depths[[source]]$depth
+    estimate <- ifelse(nuclear_depth > 0, opts$ploidy * mt_depth / nuclear_depth, NA_real_)
+    status <- ifelse(is.na(mt_depth), "missing_mgatk",
+      ifelse(measured$bases == 0, "zero_nuclear_coverage",
+        ifelse(measured$bases < opts[["min-nuclear-bases"]], "low_nuclear_coverage",
+          ifelse(mt_depth < opts[["min-mt-depth"]], "low_mitochondrial_coverage", "pass"))))
+    # The unsuffixed estimate uses ordinary mgatk; _enriched uses enriched mgatk.
+    suffix <- if (source == "enriched") "_enriched" else ""
+    out[[paste0("mitochondrial_mean_depth", suffix)]] <- mt_depth
+    out[[paste0("mtDNA_CN_normalised", suffix, "_raw")]] <- estimate
+    out[[paste0("mtDNA_CN_normalised", suffix)]] <- ifelse(status == "pass", estimate, NA_real_)
+    out[[paste0("qc_status", suffix)]] <- unname(status)
+    # Preserve previous ordinary-mgatk column names for existing consumers.
+    if (source == "mgatk") {
+      out$mtDNA_copy_estimate_raw <- estimate
+      out$mtDNA_copy_estimate <- out$mtDNA_CN_normalised
+    }
+  }
   prefix <- opts[["out-prefix"]]
   dir.create(dirname(prefix), recursive = TRUE, showWarnings = FALSE)
   write.table(out, paste0(prefix, ".mtDNA_copy_number.tsv"), sep = "\t", quote = FALSE, row.names = FALSE, na = "NA")
@@ -246,7 +297,8 @@ main <- function(args) {
               row.names = FALSE, col.names = FALSE)
   # Save all thresholds and versions alongside results for reproducibility.
   capture.output(list(arguments = opts, nuclear_reference_bp = reference_bp,
-    mgatk_depth_file = depth_files, overlap_policy = "count each mate separately",
+    mgatk_depth_files = lapply(depths, function(x) x$file), blacklist_source = blacklist_source,
+    overlap_policy = "count each mate separately",
     session = sessionInfo()), file = paste0(prefix, ".settings.txt"))
   message("Wrote estimates: ", prefix, ".mtDNA_copy_number.tsv")
   invisible(out)

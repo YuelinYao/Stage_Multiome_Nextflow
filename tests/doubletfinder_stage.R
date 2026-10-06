@@ -1,4 +1,4 @@
-# Exercise the actual 05b orchestration with real Seurat preprocessing and
+# Exercise the actual 06 orchestration with real Seurat preprocessing and
 # mocked DoubletFinder calls; no Signac or DoubletFinder installation required.
 suppressPackageStartupMessages(library(Seurat))
 env <- new.env(parent = globalenv())
@@ -52,7 +52,7 @@ run_checks <- function() {
   }
   env$args <- c('WT_1', arc, 'bed', 'json', file.path(task_dir, 'rna.rds'),
                 file.path(task_dir, 'atac.rds'), file.path(task_dir, 'qc.tsv'), review_file)
-  exprs <- parse('scripts/05b_qc_doubletfinder.R')
+  exprs <- parse('scripts/06_qc_doubletfinder.R')
   for (expr in exprs[-(1:2)]) {
     if (is.call(expr) && identical(expr[[1]], as.name('suppressPackageStartupMessages'))) next
     eval(expr, env)

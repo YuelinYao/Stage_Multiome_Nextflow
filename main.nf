@@ -6,6 +6,7 @@ params.outdir = 'results'
 params.macs3_path = null
 params.json = null
 params.cluster_review_dir = null
+params.copy_number_dir = null
 params.phase = 'review'
 params.peak_min = null
 params.peak_max = null
@@ -140,7 +141,7 @@ process PRE_DOUBLET_REVIEW {
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/05a_review_clusters.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/05_review_clusters.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)}
   """
 }
 
@@ -156,7 +157,7 @@ process QC_FILTER_DOUBLET {
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/05b_qc_doubletfinder.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)} '${id}.rna.qc.rds' '${id}.atac.qc.rds' '${id}.qc.tsv' ${shellQuote(review)}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/06_qc_doubletfinder.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)} '${id}.rna.qc.rds' '${id}.atac.qc.rds' '${id}.qc.tsv' ${shellQuote(review)}
   """
 }
 
@@ -174,7 +175,7 @@ process MERGE_INTEGRATE_RNA {
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/06a_preprocess_rna.R")} ${shellQuote(json)} ${objects.collect { shellQuote(it) }.join(' ')}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/07_preprocess_rna.R")} ${shellQuote(json)} ${objects.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -191,7 +192,7 @@ process MERGE_INTEGRATE_ATAC {
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/06b_preprocess_atac.R")} ${shellQuote(json)} ${objects.collect { shellQuote(it) }.join(' ')}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/08_preprocess_atac.R")} ${shellQuote(json)} ${objects.collect { shellQuote(it) }.join(' ')}
   """
 }
 
@@ -207,7 +208,7 @@ process MGATK_METRICS {
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/06c_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(mgatk_enriched)} '${id}.mtDNA.tsv'
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/09_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(mgatk_enriched)} '${id}.mtDNA.tsv'
   """
 }
 
@@ -224,7 +225,7 @@ process WNN_STAGE {
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/08_wnn_stage.R")} wnn.rds ${shellQuote(json)} ${shellQuote(rna)} ${shellQuote(atac)}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/12_wnn_stage.R")} wnn.rds ${shellQuote(json)} ${shellQuote(rna)} ${shellQuote(atac)}
   """
 }
 
@@ -235,13 +236,14 @@ process ADD_MGATK {
   input:
   path wnn
   path metrics
+  path copy_numbers
   output:
   path 'wnn_mgatk.rds'
   path 'all_cells_mtDNA.tsv'
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/09_add_mgatk.R")} ${shellQuote(wnn)} wnn_mgatk.rds all_cells_mtDNA.tsv ${metrics.collect { shellQuote(it) }.join(' ')}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/13_add_mgatk.R")} ${shellQuote(wnn)} wnn_mgatk.rds all_cells_mtDNA.tsv ${metrics.collect { shellQuote(it) }.join(' ')} ${copy_numbers ? "--copy-number-files " + copy_numbers.collect { shellQuote(it) }.join(' ') : ''}
   """
 }
 
@@ -256,7 +258,7 @@ process DEG_STAGE {
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/10_cluster_markers.R")} ${shellQuote(obj)}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/14_cluster_markers.R")} ${shellQuote(obj)}
   """
 }
 
@@ -325,7 +327,11 @@ workflow {
     atac_for_wnn = pipelineSettings.ATAC_processing?.integrate_atac == false ?
       MERGE_INTEGRATE_ATAC.out.unintegrated : MERGE_INTEGRATE_ATAC.out.integrated
     WNN_STAGE(rna_for_wnn, atac_for_wnn, json)
-    ADD_MGATK(WNN_STAGE.out, MGATK_METRICS.out.collect())
+    // Import already calculated step 10 results; estimation stays standalone.
+    copy_numbers = params.copy_number_dir ? rows.map { id, arc, enriched ->
+      file("${params.copy_number_dir}/${id}.mtDNA_copy_number.tsv", checkIfExists: true)
+    }.collect() : Channel.value([])
+    ADD_MGATK(WNN_STAGE.out, MGATK_METRICS.out.collect(), copy_numbers)
     DEG_STAGE(ADD_MGATK.out[0])
   }
 }
