@@ -5,6 +5,7 @@ params.stage = null
 params.outdir = 'results'
 params.macs3_path = null
 params.qc_json = null
+params.cluster_review_dir = null
 params.phase = 'review'
 params.peak_min = 20
 params.peak_max = 10000
@@ -129,13 +130,13 @@ process QC_FILTER_DOUBLET {
   memory '48 GB'
   publishDir "${params.outdir}/${params.stage}/qc/filtered", mode: 'copy', pattern: '*.qc.tsv'
   input:
-  tuple val(id), val(arc), val(mgatk), path(peaks), path(json)
+  tuple val(id), val(arc), val(mgatk), path(peaks), path(json), path(review)
   output:
   tuple val(id), val(mgatk), path("${id}.rna.qc.rds"), path("${id}.atac.qc.rds"), path("${id}.qc.tsv")
   script:
   """
   # R source checksum: ${scriptsHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/05_qc_doubletfinder.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)} '${id}.rna.qc.rds' '${id}.atac.qc.rds' '${id}.qc.tsv'
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/05b_qc_doubletfinder.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} ${shellQuote(json)} '${id}.rna.qc.rds' '${id}.atac.qc.rds' '${id}.qc.tsv' ${shellQuote(review)}
   """
 }
 
@@ -277,7 +278,12 @@ workflow {
 
   if (params.phase == 'analysis') {
     json = Channel.value(file(params.qc_json))
-    QC_FILTER_DOUBLET(rows.combine(COMMON_PEAKS.out).combine(json))
+    reviewDir = params.cluster_review_dir ?: "${params.outdir}/${params.stage}/qc/cluster_review"
+    reviewed = rows.combine(COMMON_PEAKS.out).combine(json).map { id, arc, mt, peaks, cfg ->
+      def reviewFile = file("${reviewDir}/${id}.cluster_cells.tsv", checkIfExists: true)
+      tuple(id, arc, mt, peaks, cfg, reviewFile)
+    }
+    QC_FILTER_DOUBLET(reviewed)
     filtered = QC_FILTER_DOUBLET.out
     MERGE_INTEGRATE_RNA(filtered.map { id, mt, rna, atac, report -> rna }.collect(), json)
     MERGE_INTEGRATE_ATAC(filtered.map { id, mt, rna, atac, report -> atac }.collect(), json)

@@ -82,7 +82,9 @@ nextflow run main.nf \
   --phase cluster_review -profile slurm,conda -resume
 ```
 
-Inspect `qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. Cluster review is a separate phase and is not automatically enforced by `analysis`. To follow the full checklist, complete it before analysis. If QC thresholds, clustering settings, input data or package versions change, review the resulting clusters again because their IDs may change.
+Inspect `qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. Complete cluster review before analysis: analysis now requires each sample's saved `<sample>.cluster_cells.tsv`. By default, it reads these files from `<outdir>/<stage>/qc/cluster_review/`; use `--cluster_review_dir /path/to/reviewed_tables` if they are stored elsewhere. If QC thresholds, clustering settings, input data or package versions change, review the resulting clusters again because their IDs may change.
+
+Add cluster exclusions to a copy of the JSON used for cluster review, preserving its QC thresholds and clustering settings. Analysis uses the exact saved cluster labels, rather than recreating them; if you change inputs or QC/clustering settings, run cluster review again.
 
 Finally run analysis with the reviewed JSON:
 
@@ -145,7 +147,7 @@ New templates enable both integrations. Each requires at least two samples. For 
 
 ## Details for each step
 
-Step labels follow the script filenames. Steps 03 and 04 are described together; 05a runs before 05 for cluster review. The Step 07–08 section covers modality combination and WNN; script 07 is a legacy helper, and the active workflow uses script 08.
+Step labels follow the script filenames. Steps 03 and 04 are described together; 05a performs cluster review before 05b runs DoubletFinder during analysis. The Step 07–08 section covers modality combination and WNN; script 07 is a legacy helper, and the active workflow uses script 08.
 
 ### Step 01: call ATAC peaks per sample
 
@@ -196,17 +198,25 @@ For k = 3, 5 or 7, bounds are `median ± k × mad(x, constant = 1.4826)` and app
 
 ### Step 05a: review low-quality clusters before DoubletFinder
 
-`05a_review_clusters.R`, run by `--phase cluster_review`, applies the reviewed eight-metric QC thresholds to each sample. It log-normalizes RNA, selects 2,000 variable genes, scales, computes individual PCA, finds neighbours with `RNA_dims`, and clusters with the configured algorithm/resolution. The same deterministic helper is used by step `05` to reproduce the pre-doublet cluster labels.
+`05a_review_clusters.R`, run by `--phase cluster_review`, applies the reviewed eight-metric QC thresholds to each sample. It log-normalizes RNA, selects 2,000 variable genes, scales, computes individual PCA, finds neighbours with `RNA_dims`, and clusters with the configured algorithm/resolution. The saved `<sample>.cluster_cells.tsv` contains the barcode-to-cluster assignments that step `05b` uses for cluster removal.
 
-Outputs in `STAGE/qc/cluster_review/`: `<sample>.cluster_cells.tsv`, `<sample>.cluster_summary.tsv`, `<sample>.cluster_qc.pdf`, and `<sample>.cluster_markers.tsv`. Marker tables retain only rows with finite `p_val_adj < 0.05`. Review RNA counts, mitochondrial percentages and marker informativeness together. Enter unwanted cluster IDs as strings in `doublet.exclude_clusters`. This provides the manual review/removal route described by the [DoubletFinder authors](https://github.com/chris-mcginnis-ucsf/DoubletFinder#best-practices-for-scrna-seq-data-generated-without-sample-multiplexing).
+Outputs in `STAGE/qc/cluster_review/`: `<sample>.cluster_cells.tsv`, `<sample>.cluster_summary.tsv`, `<sample>.cluster_qc.pdf`, and `<sample>.cluster_markers.tsv`. Marker tables retain only rows with finite `p_val_adj < 0.05`. Review RNA counts, mitochondrial percentages and marker informativeness together. Enter unwanted cluster IDs as strings in `doublet.exclude_clusters`. This provides the manual review/removal route described by the [DoubletFinder authors](https://github.com/chris-mcginnis-ucsf/DoubletFinder#best-practices-for-scrna-seq-data-generated-without-sample-multiplexing). For a related example of reviewing QC metrics by cluster, removing low-quality clusters and repeating preprocessing, see the [snRNA-seq Guide: cluster QC](https://lahuuki.github.io/rstats/2026-03-19-snRNAseqGuide/index.html).
 
-### Step 05: joint QC, cluster removal and DoubletFinder
+### Step 05b: joint QC, cluster removal and DoubletFinder
 
-`05_qc_doubletfinder.R` applies all eight QC thresholds, recreates the pre-doublet RNA clusters, removes the listed clusters, and recomputes normalization, variable features, PCA, neighbours and clusters before running DoubletFinder. Unknown exclusion IDs fail explicitly. At least 100 cells must remain before DoubletFinder.
+`05b_qc_doubletfinder.R` applies all eight QC thresholds and reads the saved `<sample>.cluster_cells.tsv` from step 05a. It validates the sample ID, unique barcodes, cluster labels, QC-passing cell set and QC measurements, aligns labels by barcode, and removes the listed clusters without repeating the preliminary clustering. It then computes normalization, variable features, PCA, neighbours and clusters on the retained cells before running DoubletFinder. Unknown exclusion IDs, mismatched cells and changed QC measurements fail explicitly; rerun cluster review when inputs or QC decisions change. The original reviewed labels remain in the RNA metadata as `reviewed_qc_cluster`; newly computed `pre_doublet_clusters` are used for DoubletFinder's homotypic correction. At least 100 cells must remain before DoubletFinder.
 
 DoubletFinder runs separately on each sample, using log-normalized RNA (`sct = FALSE`) and the configured RNA dimensions. A pN/pK sweep selects the pK with maximum BCmetric. The expected doublet count uses the configured sample rate and a homotypic correction derived from the reclustered RNA populations. Inspect the estimates for your experiment; this correction uses clusters as a proxy for cell types. At least 50 singlets must remain.
 
 The resulting singlet barcodes select both RNA and ATAC. Cell names gain the sample prefix; metadata retains `sample_id` and the original `barcode` for mgatk matching. Outputs are individual `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints in the Nextflow work directory, and a published `<sample>.qc.tsv` recording raw/QC/cluster/singlet counts, excluded cluster IDs, pK, rate and expected doublets.
+
+Cell counts are reported per sample in `<outdir>/<stage>/qc/filtered/<sample>.qc.tsv` and in the task's `.command.err` log. `raw_joint` is the number of starting cells with both modalities. Each removal count is relative to the immediately preceding step; if no clusters are excluded, `cluster_removed` is zero.
+
+| Step | Cells remaining | Cells removed |
+| --- | --- | --- |
+| 1. Initial QC metric filtering | `qc_pass` | `qc_removed` |
+| 2. Reviewed-cluster removal, before reclustering | `cluster_pass` | `cluster_removed` |
+| 3. DoubletFinder singlet selection | `df_singlets` | `df_removed` |
 
 ### Step 06a: individual RNA preprocessing, then stage merge and integration
 

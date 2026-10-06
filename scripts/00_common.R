@@ -180,6 +180,32 @@ preprocess_qc_rna <- function(obj, settings) {
   FindClusters(obj, resolution = settings$resolution, algorithm = settings$algorithm,
     cluster.name = "pre_doublet_clusters", verbose = FALSE)
 }
+# Load the exact cluster labels inspected in phase cluster_review. Match by
+# barcode, never row position, and reject missing/extra cells or stale metrics.
+read_reviewed_qc_clusters <- function(file, sample, tab, keep) {
+  review <- read.delim(file, check.names = FALSE,
+    colClasses = c(sample_id = "character", barcode = "character",
+                   pre_doublet_cluster = "character"))
+  required <- c("sample_id", "barcode", "pre_doublet_cluster", qc_metric_names)
+  if (!all(required %in% names(review)) || anyDuplicated(names(review)))
+    stop_bad("Missing or duplicated columns in cluster review table: ", file)
+  if (!nrow(review) || anyNA(review[, required[1:3]]) ||
+      any(review$sample_id != sample) || any(!nzchar(review$barcode)) ||
+      any(!nzchar(review$pre_doublet_cluster)) || anyDuplicated(review$barcode))
+    stop_bad("Invalid sample, barcode or cluster labels in review table: ", file)
+  if (!setequal(review$barcode, keep))
+    stop_bad("Reviewed cells differ from current QC-passing cells for ", sample,
+             "; rerun --phase cluster_review with the current QC thresholds")
+  review <- review[match(keep, review$barcode), , drop = FALSE]
+  current <- tab[match(keep, tab$barcode), , drop = FALSE]
+  for (metric in qc_metric_names)
+    if (!is.numeric(review[[metric]]) ||
+        !isTRUE(all.equal(review[[metric]], current[[metric]], tolerance = 1e-8,
+                         check.attributes = FALSE)))
+      stop_bad("Reviewed QC metrics differ for ", sample, "/", metric,
+               "; rerun --phase cluster_review with the current inputs")
+  setNames(review$pre_doublet_cluster, review$barcode)
+}
 remove_qc_clusters <- function(obj, excluded) {
   unknown <- setdiff(excluded, as.character(unique(obj$pre_doublet_clusters)))
   if (length(unknown)) stop_bad("Unknown pre-doublet cluster IDs: ", paste(unknown, collapse = ", "))
