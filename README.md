@@ -44,7 +44,7 @@ Gene symbols, the reference genome and barcodes are requirements for the existin
 | Data requirement | Where it comes from |
 |---|---|
 | Mouse gene symbols | Gene names stored in ARC's `filtered_feature_bc_matrix.h5`; cell-cycle scoring and sex inference require symbols rather than Ensembl IDs |
-| mm10 reference | ARC and mgatk outputs must use a compatible mm10 reference; the workflow supplies mm10 gene annotation through `EnsDb.Mmusculus.v79` and checks that mgatk's reference allele at mitochondrial position 5019 is A. No reference FASTA is supplied to this workflow |
+| mm10 reference | ARC and mgatk outputs must use a compatible mm10 reference; the workflow supplies mm10 gene annotation through `EnsDb.Mmusculus.v79` and validates mgatk reference alleles at the three 5019-associated mitochondrial sites listed in Step 06c (including A at position 5019). No reference FASTA is supplied to this workflow |
 | Matching original 10x barcodes | Cell identifiers already stored in ARC and mgatk outputs; the workflow uses them to match mitochondrial measurements to retained cells. At least some retained cells must match; unmatched cells retain missing mgatk measurements |
 
 Supply `--samples` with your sample CSV and `--stage` with the stage to analyse. For example, `--samples examples/samples.csv --stage E8.5` selects all rows labelled `E8.5`, including WT and mutant samples, and excludes other stages. Matching is case-sensitive; the workflow stops if no rows match.
@@ -199,7 +199,9 @@ By default, the expected rate is estimated from ARC's detected-cell count using 
 }
 ```
 
-**7. `ATAC_processing`: ATAC analysis in 06b.** `ATAC_dims` controls neighbours, clustering, UMAP and reciprocal-LSI anchors. `ATAC_integrate_dims` selects components corrected during integration. When integration is enabled, it must cover every component requested by both `ATAC_processing.ATAC_dims` and `WNN.ATAC_dims`. `min_cutoff = "q5"` selects peaks above the 5th percentile of total counts for LSI (approximately the top 95%; tied counts can affect the proportion), retaining all peaks in the raw assay. This cutoff is applied separately to each sample and again to the merged stage object. The pipeline accepts percentile strings from `"q0"` to below `"q100"`, or nonnegative integer count thresholds; `10`, for example, selects peaks with more than 10 total counts. See [Signac `FindTopFeatures`](https://stuartlab.org/signac/reference/findtopfeatures). Set `integrate_atac` to `false` for a single-sample stage.
+**7. `ATAC_processing`: ATAC analysis in 06b.** `ATAC_dims` controls neighbours, clustering, UMAP and reciprocal-LSI anchors. `ATAC_integrate_dims` selects components corrected during integration. When integration is enabled, this range must start at component 1 to preserve downstream component numbering and cover every component requested by both `ATAC_processing.ATAC_dims` and `WNN.ATAC_dims`. The [Signac integration tutorial](https://stuartlab.org/signac/articles/integrate_atac#integration) uses `dims = 2:30` for anchors, `dims.to.integrate = 1:30` for correction, and `dims = 2:30` for the integrated UMAP. Our defaults follow the same pattern with `2:40` and `1:40`: component 1 is retained in the corrected reduction but excluded from anchors, neighbours, clustering, UMAP and WNN by the default analysis ranges.
+
+`min_cutoff = "q5"` selects peaks above the 5th percentile of total counts for LSI (approximately the top 95%; tied counts can affect the proportion), retaining all peaks in the raw assay. This cutoff is applied separately to each sample and again to the merged stage object. The pipeline accepts percentile strings from `"q0"` to below `"q100"`, or nonnegative integer count thresholds; `10`, for example, selects peaks with more than 10 total counts. See [Signac `FindTopFeatures`](https://stuartlab.org/signac/reference/findtopfeatures). Set `integrate_atac` to `false` for a single-sample stage.
 
 ```json
 "ATAC_processing": {
@@ -333,17 +335,27 @@ Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, select
 
 ### Step 06b: individual ATAC preprocessing, then stage merge and integration
 
-`06b_preprocess_atac.R` uses the `ATAC_processing` settings and receives the JSON and all filtered ATAC RDS files. In memory it runs sample-level `FindTopFeatures`, TF-IDF and SVD/LSI; these sample LSI reductions are required for reciprocal-LSI anchors. It merges the objects while retaining fragment mappings, then recomputes stage TF-IDF/LSI and generates `atac_unintegrated_clusters` and `atac_unintegrated_umap`.
+`06b_preprocess_atac.R` uses the `ATAC_processing` settings and receives the JSON and all filtered ATAC RDS files. When integration is enabled, it runs sample-level `FindTopFeatures`, TF-IDF and SVD/LSI in memory up to the largest `ATAC_processing.ATAC_dims` component for reciprocal-LSI anchors. Sample-level LSI is skipped when integration is disabled. It merges the objects while retaining fragment mappings, then recomputes stage TF-IDF/LSI and generates `atac_unintegrated_clusters` and `atac_unintegrated_umap`.
 
-When enabled, `FindIntegrationAnchors(reduction = "rlsi")` and `IntegrateEmbeddings` create `integrated_lsi`, followed by `atac_integrated_clusters` and `atac_integrated_umap`. Both integration steps use a weighting neighbourhood capped by the smallest sample size. This follows YY_06 and the [Signac ATAC integration workflow](https://stuartlab.org/signac/articles/integrate_atac.html).
+When enabled, `FindIntegrationAnchors(reduction = "rlsi")` and `IntegrateEmbeddings` create `integrated_lsi`, followed by `atac_integrated_clusters` and `atac_integrated_umap`. ATAC integration uses a weighting neighbourhood capped at 100 and further limited by the smallest sample size and the distinct anchor cells in each sample pair; the chosen value is logged and stored as `misc$atac_integration_k_weight`. This follows YY_06 and the [Signac ATAC integration workflow](https://stuartlab.org/signac/articles/integrate_atac.html).
 
 Published outputs: `atac_unintegrated.rds`, optional `atac_integrated.rds`, and selected `atac_stage.rds`. No individual preprocessed RDS files are saved. Compare integrated and unintegrated results because integration can reduce sample-associated biological variation.
 
 ### Step 06c: read precomputed mgatk results per sample
 
-`06c_mgatk_metrics.R` reads completed mgatk results with `ReadMGATK`; it does not run mitochondrial alignment, variant calling or mgatk itself. It matches the original retained RNA barcodes, checks reference A at m.5019, and calculates total and strand-specific A/G counts, locus coverage, mtDNA sequencing depth and G/(A+G) heteroplasmy. Missing mgatk barcodes are retained with missing measurements.
+`06c_mgatk_metrics.R` reads completed mgatk results with [Signac `ReadMGATK`](https://stuartlab.org/signac/reference/readmgatk); it does not run mitochondrial alignment, variant calling or mgatk itself. Following the supplied `YY_06_mgatk_heteroplasmy.R`, it measures the three 5019-associated sites and validates their expected reference alleles. It matches original retained RNA barcodes and exact base/position/strand row names, preserving cell order. Missing mgatk barcodes are retained with missing measurements; `mgatk_matched` distinguishes them from matched cells with zero coverage.
 
-Output: `STAGE/mgatk/<sample>.mtDNA.tsv`. `hf_5019_covered` is missing below 10 A+G reads; `depth_5019` includes all four bases. `mtDNA_depth` measures sequencing coverage, not absolute mtDNA copy number.
+| Position | Reference → alternate |
+| --- | --- |
+| 5019 | A → G |
+| 15200 | A → G |
+| 16232 | A → T |
+
+Output: `STAGE/mgatk/<sample>.mtDNA.tsv`. For each position, `Depth_<position>` sums all four bases on both strands; `Informative_depth_<position>` includes only reference and alternate reads. `Heteroplasmy_<position>` is alternate / (reference + alternate), and is missing when that denominator is zero. The table includes all eight base/strand counts, strand-specific fractions, and `Heteroplasmy_<position>_covered`, which requires at least 10 informative reads. The main metadata names match `YY_06`: `Heteroplasmy_5019`, `Depth_5019`, `Heteroplasmy_15200`, `Depth_15200`, `Heteroplasmy_16232` and `Depth_16232`. Reference and mutant counts are named `Allele_ref_<position>` and `Allele_mut_<position>` in the combined table.
+
+`Heteroplasmy_all_5019` pools reference and alternate counts across 5019, 15200 and 16232 before dividing, rather than averaging site fractions. The pooled columns follow the same naming: `Depth_all_5019`, `Informative_depth_all_5019`, `Allele_ref_all_5019`, `Allele_mut_all_5019` and `Heteroplasmy_all_5019_covered`, which requires at least 25 **informative** reads. This differs from the supplied script's total-depth cutoff, so other-base calls cannot satisfy the coverage requirement. Pooling assumes these sites tag the intended 5019 haplotype; these measurements do not establish linkage or phase. The same metrics are calculated for mutant and WT samples without inferring genotype from sample names.
+
+`mtDNA_count` sums genome-wide base/strand counts; it represents sequenced base observations, not unique reads or molecules. `mtDNA_depth` retains the mgatk depth-table measurement. Neither metric is absolute mtDNA copy number. Step 09 attaches all these columns to the final WNN object's metadata.
 
 ### Step 07–08: combine modalities and build WNN
 
@@ -414,10 +426,12 @@ Run `Rscript tests/mtdna_copy_number.R` for synthetic CIGAR, base-quality, dupli
 
 ## Workflow files and execution
 
+Run `Rscript tests/atac_integration.R` to check stage dimension handling, reciprocal-LSI integration, preserved counts and the no-integration path. This test uses real Seurat integration with synthetic preprocessing substitutes; it does not validate Signac or fragment handling.
+
 `main.nf` wires every active script and stages files between tasks. `nextflow.config` supplies local/Conda/Slurm execution settings. `scripts/00_common.R` contains shared import, QC, validation, clustering, scoring and annotation helpers; it is not a standalone process. `examples/` contains the manifest and illustrative JSON.
 
 RNA and ATAC stage processing can run concurrently, while mgatk extraction runs per sample. WNN waits for both stage objects; mgatk attachment waits for WNN and all mgatk tables; marker detection waits for the annotated final object. The stage RNA/ATAC tasks each request 96 GB; adjust process resources in a site config if needed.
 
-Run the dependency-light regression checks with `Rscript tests/regression.R`. `Rscript tests/doubletfinder_stage.R` verifies independent DoubletFinder settings and outputs with real Seurat preprocessing and mocked DoubletFinder calls; `Rscript tests/wnn_settings.R` verifies independent WNN dimensions, clustering settings and reduction selection using synthetic Seurat objects. These parse every R script and exercise configuration validation, inclusive QC boundaries, non-finite QC rejection, and missing mgatk barcode handling using synthetic data. They do not exercise the full scientific analysis. This workspace has Java 8 and lacks Signac, DoubletFinder and cellXY, so full workflow execution requires the production environment and a small real stage.
+Run the dependency-light regression checks with `Rscript tests/regression.R`. `Rscript tests/mgatk_metrics.R` checks the three 5019-associated sites, pooled 5019 fractions, zero/missing coverage, shuffled sparse-matrix rows and barcode order, invalid inputs, and step 09 metadata attachment using synthetic counts and real Seurat; mgatk file parsing is mocked. `Rscript tests/doubletfinder_stage.R` verifies independent DoubletFinder settings and outputs with real Seurat preprocessing and mocked DoubletFinder calls; `Rscript tests/wnn_settings.R` verifies independent WNN dimensions, clustering settings and reduction selection using synthetic Seurat objects. These parse every R script and exercise configuration validation, inclusive QC boundaries, non-finite QC rejection, and missing mgatk barcode handling using synthetic data. They do not exercise the full scientific analysis. This workspace has Java 8 and lacks Signac, DoubletFinder and cellXY, so full workflow execution requires the production environment and a small real stage.
 
 Samples are validated before tasks launch and processed in sample-ID order. Shell arguments support paths containing spaces and apostrophes. An R-source checksum is included in task commands, so editing any R script invalidates cached tasks on `-resume`. ARC and mgatk directories remain shared absolute paths: changing their contents in place is not detected by Nextflow; use a fresh work directory when replacing those data. Package/environment changes also require a fresh work directory.

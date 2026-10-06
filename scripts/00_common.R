@@ -174,6 +174,11 @@ read_pipeline_config <- function(file, sample = NULL) {
   cfg$thresholds <- limits
   for (name in c("review_QC_cluster", "RNA_processing", "ATAC_processing", "WNN"))
     cfg[[name]] <- parse_section(name)
+  # IntegrateEmbeddings renumbers output columns sequentially; including LSI1
+  # preserves the meaning of the original LSI indices used downstream.
+  if (cfg$ATAC_processing$integrate_atac &&
+      min(cfg$ATAC_processing$ATAC_integrate_dims) != 1L)
+    stop_bad("ATAC_processing.ATAC_integrate_dims must start at 1 when integration is enabled")
   if (cfg$ATAC_processing$integrate_atac &&
       !all(c(cfg$ATAC_processing$ATAC_dims, cfg$WNN$ATAC_dims) %in%
            cfg$ATAC_processing$ATAC_integrate_dims))

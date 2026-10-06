@@ -50,6 +50,8 @@ stopifnot(identical(separate$review_QC_cluster$RNA_dims, 1:12),
           separate$WNN$algorithm == 1)
 bad <- independent; bad$ATAC_processing$ATAC_integrate_dims <- "1:40"
 expect_error(env$read_pipeline_config(write_config(bad)))
+bad <- cfg; bad$ATAC_processing$ATAC_integrate_dims <- "2:40"
+expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$doublet$resolution <- 0
 expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$clustering <- list(algorithm = 3)
@@ -79,18 +81,25 @@ obj <- matrix(0, 1, 2, dimnames = list("gene", c("sample_present", "sample_missi
 class(obj) <- c("mock_cells", class(obj))
 `$.mock_cells` <- function(x, name) c("present", "missing")
 saveRDS(obj, obj_file)
-env$ReadMGATK <- function(dir) list(
-  refallele = data.frame(pos = 5019, ref = "A"),
-  counts = matrix(c(3, 3, 2, 2, 0, 0, 0, 0), ncol = 1,
-    dimnames = list(paste(rep(c("A", "G", "C", "T"), each = 2), 5019,
-                          rep(c("fwd", "rev"), 4), sep = "-"), "present")),
-  depth = data.frame(depth = 100, row.names = "present"))
+env$ReadMGATK <- function(dir) {
+  positions <- c(5019, 15200, 16232)
+  rows <- unlist(lapply(positions, function(pos)
+    paste(rep(c("A", "G", "C", "T"), each = 2), pos,
+          rep(c("fwd", "rev"), 4), sep = "-")))
+  counts <- matrix(0, nrow = length(rows), ncol = 1,
+                   dimnames = list(rows, "present"))
+  counts[paste(rep(c("A", "G"), each = 2), 5019,
+               rep(c("fwd", "rev"), 2), sep = "-"), 1] <- c(3, 3, 2, 2)
+  list(refallele = data.frame(pos = positions,
+    ref = c("A", "A", "A")),
+    counts = counts, depth = data.frame(depth = 100, row.names = "present"))
+}
 env$args <- c("sample", obj_file, "mock", out_file)
 exprs <- parse("scripts/06c_mgatk_metrics.R")
 for (expr in exprs[-(1:2)]) eval(expr, env)
 result <- read.delim(out_file)
-stopifnot(result$hf_5019[1] == 0.4, result$depth_5019[1] == 10,
-          result$mtDNA_depth[1] == 100, is.na(result$hf_5019[2]),
+stopifnot(result$Heteroplasmy_5019[1] == 0.4, result$Depth_5019[1] == 10,
+          result$mtDNA_depth[1] == 100, is.na(result$Heteroplasmy_5019[2]),
           is.na(result$mtDNA_depth[2]))
 unlink(c(config_file, obj_file, out_file))
 stopifnot(env$nextgem_multiome_doublet_rate(5000) == 0.039,
