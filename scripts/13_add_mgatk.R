@@ -25,6 +25,17 @@ args <- commandArgs(trailingOnly = TRUE)
     if (!nrow(tab) || anyNA(tab[, c("cell_id", "sample_id", "barcode")]) ||
         any(!nzchar(tab$cell_id)) || any(!nzchar(tab$sample_id)) || any(!nzchar(tab$barcode)))
       stop_bad("Empty mgatk table or missing identifiers: ", f)
+    # TSV type inference turns an entirely missing numeric column into logical.
+    # Retain numeric coverage/fraction metadata even when no cells cover a site.
+    numeric_columns <- grep("^(mtDNA_(depth|count)$|Depth_|Informative_depth_|Allele_|[ACGT]_[0-9]|Heteroplasmy_)",
+                            names(tab), value = TRUE)
+    for (key in numeric_columns) {
+      if (is.logical(tab[[key]]) && all(is.na(tab[[key]]))) tab[[key]] <- as.numeric(tab[[key]])
+      values <- tab[[key]]
+      if (!is.numeric(values) || any(!is.na(values) & (!is.finite(values) | values < 0)) ||
+          (startsWith(key, "Heteroplasmy_") && any(values > 1, na.rm = TRUE)))
+        stop_bad("Invalid mgatk measurement ", key, ": ", f)
+    }
     tab
   })
   if (!all(vapply(tables, function(tab) identical(names(tab), names(tables[[1]])), logical(1))))
@@ -56,7 +67,9 @@ args <- commandArgs(trailingOnly = TRUE)
       if (!all(c("sample_id", "barcode") %in% names(values)) ||
           !length(estimates) || anyDuplicated(names(values)) || !nrow(values))
         stop_bad("Missing identifiers/estimates or invalid copy-number columns: ", f)
-      for (key in grep("^mtDNA_CN_normalised", names(values), value = TRUE)) {
+      numeric_columns <- grep("^(mtDNA_CN_normalised|mtDNA_copy_estimate|nuclear_|mitochondrial_mean_depth|assumed_nuclear_ploidy)",
+                              names(values), value = TRUE)
+      for (key in numeric_columns) {
         # read.delim infers logical for an entirely NA column; preserve numeric
         # metadata even when all cells fail that source's coverage checks.
         if (is.logical(values[[key]]) && all(is.na(values[[key]]))) values[[key]] <- as.numeric(values[[key]])

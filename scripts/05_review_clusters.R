@@ -2,7 +2,7 @@
 source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1])), "00_common.R"))
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) == 4L)
-sample <- args[1]; cfg <- read_pipeline_config(args[4], sample)
+sample <- args[1]; cfg <- read_pipeline_config(args[4], sample, process = "review_QC_cluster")
 assays <- make_assays(args[2], args[3])
 tab <- qc_table(sample, assays)
 keep <- apply_qc(tab, cfg$thresholds)
@@ -26,8 +26,5 @@ markers <- if (length(levels(Idents(rna))) > 1L)
   FindAllMarkers(rna, only.pos = TRUE, assay = "RNA", min.pct = 0.1,
     logfc.threshold = 0.25, verbose = FALSE) else data.frame()
 # Apply significance to adjusted p-values explicitly.
-if (nrow(markers)) {
-  markers <- markers[is.finite(markers$p_val_adj) & markers$p_val_adj < 0.05,
-                     , drop = FALSE]
-}
+markers <- filter_significant_markers(markers)
 write_tsv(markers, paste0(sample, ".cluster_markers.tsv"))

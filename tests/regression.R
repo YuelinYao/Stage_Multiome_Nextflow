@@ -74,6 +74,8 @@ bad <- cfg; bad$peaks$peak_min <- 10000
 expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$peaks$peak_max <- 12.5
 expect_error(env$read_pipeline_config(write_config(bad)))
+empty_override <- cfg; empty_override$sample_overrides <- list(WT_1 = list())
+stopifnot(identical(env$read_pipeline_config(write_config(empty_override), "WT_1")$thresholds, valid$thresholds))
 bad <- cfg; bad$sample_overrides <- list(list(nCount_RNA = list(min = 1, max = 2)))
 expect_error(env$read_pipeline_config(write_config(bad)))
 bad <- cfg; bad$thresholds$nCount_RNA <- list(min = 2, max = 1)

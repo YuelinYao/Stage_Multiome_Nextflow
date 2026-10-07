@@ -12,8 +12,5 @@ args <- commandArgs(trailingOnly = TRUE)
                    logfc.threshold = 0.25, test.use = "wilcox")
   } else data.frame()
   # Apply significance to adjusted p-values explicitly.
-  if (nrow(markers)) {
-    markers <- markers[is.finite(markers$p_val_adj) & markers$p_val_adj < 0.05,
-                       , drop = FALSE]
-  }
+  markers <- filter_significant_markers(markers)
   write_tsv(markers, "cluster_markers.tsv")

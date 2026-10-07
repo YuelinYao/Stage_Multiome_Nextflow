@@ -2,7 +2,7 @@
 source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1])), "00_common.R"))
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) >= 2L)
-cfg <- read_pipeline_config(args[1])
+cfg <- read_pipeline_config(args[1], process = "RNA_processing")
 settings <- cfg$RNA_processing
 items <- read_stage_objects(args[-1], "RNA")
 set.seed(123)
@@ -42,7 +42,8 @@ obj <- FindVariableFeatures(obj, nfeatures = 2000, verbose = FALSE)
 obj <- ScaleData(obj, verbose = FALSE)
 DefaultAssay(obj) <- "SCT"
 VariableFeatures(obj) <- features
-required_pcs <- max(c(settings$RNA_dims, settings$RNA_umap_dims, cfg$WNN$RNA_dims))
+required_pcs <- if (!is.null(cfg$component_count)) cfg$component_count else
+  max(c(settings$RNA_dims, settings$RNA_umap_dims, cfg$WNN$RNA_dims))
 if (min(ncol(obj), length(features)) <= required_pcs)
   stop_bad("Need more than ", required_pcs, " cells and SCT features for RNA PCA")
 obj <- RunPCA(obj, features = features, npcs = required_pcs,

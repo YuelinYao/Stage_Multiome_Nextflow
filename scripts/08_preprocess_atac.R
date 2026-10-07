@@ -2,7 +2,7 @@
 source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1])), "00_common.R"))
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) >= 2L)
-cfg <- read_pipeline_config(args[1])
+cfg <- read_pipeline_config(args[1], process = "ATAC_processing")
 settings <- cfg$ATAC_processing
 items <- read_stage_objects(args[-1], "ATAC")
 if (!all(vapply(items, function(x) identical(rownames(x[["ATAC"]]),
@@ -28,7 +28,8 @@ obj <- if (length(items) == 1L) items[[1]] else
 DefaultAssay(obj) <- "ATAC"
 obj <- FindTopFeatures(obj, min.cutoff = settings$min_cutoff)
 obj <- RunTFIDF(obj, verbose = FALSE)
-required_lsi <- max(c(settings$ATAC_dims, cfg$WNN$ATAC_dims,
+required_lsi <- if (!is.null(cfg$component_count)) cfg$component_count else
+  max(c(settings$ATAC_dims, cfg$WNN$ATAC_dims,
   if (settings$integrate_atac) settings$ATAC_integrate_dims))
 if (min(ncol(obj), length(VariableFeatures(obj))) <= required_lsi)
   stop_bad("Need more than ", required_lsi, " cells and variable peaks for LSI")

@@ -4,7 +4,7 @@ args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) == 8L)
 sample <- args[1]; arc <- args[2]; bed <- args[3]; json <- args[4]
 set.seed(123)
-cfg <- read_pipeline_config(json, sample)
+cfg <- read_pipeline_config(json, sample, process = "doublet")
 arc_detected_cells <- read_arc_detected_cells(arc)
 rate_source <- if (identical(cfg$doublet$expected_rate, "auto"))
   "ARC summary; Next GEM Multiome table" else "Pipeline JSON override"

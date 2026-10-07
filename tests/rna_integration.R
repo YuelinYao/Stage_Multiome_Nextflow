@@ -29,6 +29,7 @@ run_checks <- function() {
   cfg$RNA_processing$RNA_dims <- '1:10'
   cfg$RNA_processing$RNA_umap_dims <- '1:20'
   cfg$WNN$RNA_dims <- '1:30'
+  cfg <- list(process = 'RNA_processing', RNA_processing = cfg$RNA_processing, component_count = 30)
   config <- file.path(task_dir, 'settings.json')
   jsonlite::write_json(cfg, config, auto_unbox = TRUE, null = 'null')
   env$annotate_sample_rna <- function(obj) {

@@ -27,6 +27,7 @@ run_checks <- function() {
   cfg$ATAC_processing$algorithm <- 1
   cfg$ATAC_processing$resolution <- 0.2
   cfg$WNN$ATAC_dims <- '2:80'
+  cfg <- list(process = 'ATAC_processing', ATAC_processing = cfg$ATAC_processing, component_count = 80)
   config <- file.path(task_dir, 'settings.json')
   jsonlite::write_json(cfg, config, auto_unbox = TRUE, null = 'null')
   env$FindTopFeatures <- function(object, min.cutoff) {
@@ -73,8 +74,8 @@ run_checks <- function() {
   # Without integration, sample LSI and the unused integration range are skipped.
   unlink(c('atac_integrated.rds', 'atac_unintegrated.rds'))
   cfg$ATAC_processing$integrate_atac <- FALSE
-  cfg$ATAC_processing$ATAC_integrate_dims <- '1:200'
-  cfg$WNN$ATAC_dims <- '2:30'
+  cfg$ATAC_processing$ATAC_integrate_dims <- NULL
+  cfg$component_count <- 30
   jsonlite::write_json(cfg, config, auto_unbox = TRUE, null = 'null')
   requested <- integer()
   for (expr in expressions) eval(expr, env)

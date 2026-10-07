@@ -83,6 +83,15 @@ run_checks <- function() {
   stopifnot(identical(colnames(attached), colnames(obj)),
     identical(as.character(attached$sample_id), rep('001', ncol(obj))),
     attached$Heteroplasmy_all_5019[1] == 0.7, is.na(attached$Heteroplasmy_all_5019[2]))
+  # All-NA numeric fractions retain numeric metadata after a TSV round trip.
+  all_missing <- tab
+  all_missing$Heteroplasmy_15200_covered <- NA_real_
+  env$write_tsv(all_missing, output)
+  for (expr in parse('scripts/13_add_mgatk.R')[-(1:2)]) eval(expr, env)
+  missing_result <- readRDS(final)
+  stopifnot(is.numeric(missing_result$Heteroplasmy_15200_covered),
+            all(is.na(missing_result$Heteroplasmy_15200_covered)))
+  env$write_tsv(tab, output)
   attachment_args <- env$args
   # Step 13 imports both copy-number sources without disturbing heteroplasmy.
   copy_file <- file.path(task_dir, '001.mtDNA_copy_number.tsv')

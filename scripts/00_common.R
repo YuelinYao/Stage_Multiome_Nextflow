@@ -6,6 +6,15 @@ suppressPackageStartupMessages({
 stop_bad <- function(...) stop(..., call. = FALSE)
 write_tsv <- function(x, file) write.table(x, file, sep = "\t", quote = FALSE,
                                            row.names = FALSE, na = "NA")
+filter_significant_markers <- function(markers) {
+  # One cluster or no detected markers must still produce a readable TSV header.
+  if (!nrow(markers) && !ncol(markers)) return(data.frame(
+    p_val = numeric(), avg_log2FC = numeric(), pct.1 = numeric(), pct.2 = numeric(),
+    p_val_adj = numeric(), cluster = character(), gene = character()))
+  if (!"p_val_adj" %in% names(markers) || !is.numeric(markers$p_val_adj))
+    stop_bad("Marker results must contain numeric adjusted p-values")
+  markers[is.finite(markers$p_val_adj) & markers$p_val_adj < 0.05, , drop = FALSE]
+}
 read_arc <- function(arc) {
   x <- Read10X_h5(file.path(arc, "filtered_feature_bc_matrix.h5"))
   if (!all(c("Gene Expression", "Peaks") %in% names(x)))
@@ -102,7 +111,7 @@ pipeline_analysis_defaults <- function() list(
                          algorithm = 3L, resolution = 2, integrate_atac = TRUE,
                          min_cutoff = "q5"),
   WNN = list(RNA_dims = "1:20", ATAC_dims = "2:40", algorithm = 3L, resolution = 2))
-read_pipeline_config <- function(file, sample = NULL) {
+read_pipeline_config <- function(file, sample = NULL, process = NULL) {
   cfg <- jsonlite::fromJSON(file, simplifyVector = FALSE)
   named_object <- function(value, name) {
     if (!is.list(value) || (length(value) &&
@@ -111,6 +120,57 @@ read_pipeline_config <- function(file, sample = NULL) {
       stop_bad(name, " must be an object with unique, nonempty keys")
   }
   named_object(cfg, "Pipeline JSON")
+  component_count <- NULL
+  # Nextflow writes a small JSON from this task's val inputs. Direct R runs may
+  # still supply the complete pipeline JSON and retain full validation below.
+  if (!is.null(cfg$process)) {
+    task_sections <- list(
+      review_QC_cluster = c("thresholds", "review_QC_cluster"),
+      doublet = c("thresholds", "doublet"),
+      RNA_processing = c("RNA_processing", "component_count"),
+      ATAC_processing = c("ATAC_processing", "component_count"),
+      WNN = c("WNN", "RNA_processing", "ATAC_processing"))
+    if (is.null(process) || !identical(cfg$process, process) ||
+        !(process %in% names(task_sections)) ||
+        !setequal(names(cfg), c("process", task_sections[[process]])))
+      stop_bad("Invalid process-specific settings JSON")
+    cfg$process <- NULL
+    component_count <- cfg$component_count
+    cfg$component_count <- NULL
+    if (process %in% c("RNA_processing", "ATAC_processing") &&
+        (length(component_count) != 1L || !is.numeric(component_count) ||
+         !is.finite(component_count) || component_count < 1 ||
+         component_count > 500 || component_count != floor(component_count)))
+      stop_bad("Invalid process component_count")
+    if (process == "WNN") {
+      for (section in c("RNA_processing", "ATAC_processing")) {
+        named_object(cfg[[section]], section)
+        key <- if (section == "RNA_processing") "integrate_rna" else "integrate_atac"
+        value <- cfg[[section]][[key]]
+        if (!identical(names(cfg[[section]]), key) || length(value) != 1L ||
+            !is.logical(value) || is.na(value))
+          stop_bad("WNN task settings must include only the logical ", section, ".", key)
+      }
+    }
+    # Unused sections receive validation defaults only; QC steps must always
+    # provide their real thresholds. Stage tasks never apply these placeholders.
+    if (!(process %in% c("review_QC_cluster", "doublet")))
+      cfg$thresholds <- setNames(lapply(qc_metric_names,
+        function(x) list(min = 0, max = NULL)), qc_metric_names)
+    if (process != "ATAC_processing") {
+      # WNN only needs the integration switch, not the ATAC anchor dimensions.
+      if (process == "WNN" && isTRUE(cfg$ATAC_processing$integrate_atac)) {
+        cfg$ATAC_processing$ATAC_dims <- "1:1"
+        cfg$ATAC_processing$ATAC_integrate_dims <- cfg$WNN$ATAC_dims
+        cfg$ATAC_processing$ATAC_integrate_dims <- sub("^[0-9]+:", "1:",
+          cfg$ATAC_processing$ATAC_integrate_dims)
+      } else cfg$ATAC_processing <- list(integrate_atac = FALSE)
+    } else {
+      # Cross-step coverage was validated by the workflow. Preserve the local
+      # ATAC coverage check without importing unrelated WNN ranges.
+      cfg$WNN <- list(ATAC_dims = cfg$ATAC_processing$ATAC_dims)
+    }
+  }
   allowed <- c("peaks", "note", "thresholds", "sample_overrides", "review_QC_cluster",
                "doublet", "RNA_processing", "ATAC_processing", "WNN", "copy_number", "clustering")
   unknown <- setdiff(names(cfg), allowed)
@@ -167,7 +227,7 @@ read_pipeline_config <- function(file, sample = NULL) {
       stop_bad(key, " must be an object keyed by sample ID")
     for (entry in value) {
       named_object(entry, "sample override")
-      if (!is.list(entry) || is.null(names(entry)) ||
+      if (!is.list(entry) || (length(entry) && is.null(names(entry))) ||
           !all(names(entry) %in% qc_metric_names)) stop_bad("Invalid sample override")
     }
   }
@@ -281,6 +341,14 @@ read_pipeline_config <- function(file, sample = NULL) {
     as.character(unlist(doublet$exclude_clusters[[sample]], use.names = FALSE))
   cfg$doublet <- list(PC_dims = doublet_dims, algorithm = doublet$algorithm,
     resolution = doublet$resolution, expected_rate = rate, exclude_clusters = excluded)
+  if (!is.null(component_count)) {
+    used <- if (process == "RNA_processing")
+      c(cfg$RNA_processing$RNA_dims, cfg$RNA_processing$RNA_umap_dims) else
+      c(cfg$ATAC_processing$ATAC_dims,
+        if (cfg$ATAC_processing$integrate_atac) cfg$ATAC_processing$ATAC_integrate_dims)
+    if (component_count < max(used)) stop_bad("component_count does not cover analysis dimensions")
+    cfg$component_count <- as.integer(component_count)
+  }
   cfg
 }
 read_arc_detected_cells <- function(arc) {

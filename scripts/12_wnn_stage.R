@@ -3,7 +3,7 @@ source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), val
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) == 4L)
 outfile <- args[1]
-cfg <- read_pipeline_config(args[2])
+cfg <- read_pipeline_config(args[2], process = "WNN")
 settings <- cfg$WNN
 obj <- readRDS(args[3]); atac <- readRDS(args[4])
 if (!setequal(colnames(obj), colnames(atac))) stop_bad("Stage RNA/ATAC cells differ")

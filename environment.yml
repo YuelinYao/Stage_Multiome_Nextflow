@@ -1,6 +1,4 @@
 # Additional required R packages: DoubletFinder and cellXY.
-# They are not recorded as Conda dependencies in this export; verify that
-# both are installed in the existing shared environment before analysis.
 name: stage_multiome
 channels:
   - ccbbucsd
