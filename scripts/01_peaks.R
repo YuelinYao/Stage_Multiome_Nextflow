@@ -4,6 +4,11 @@ args <- commandArgs(trailingOnly = TRUE)
 
   stopifnot(length(args) == 4L)
   sample <- args[1]; arc <- args[2]; macs <- args[3]; outfile <- args[4]
+  message("01_peaks.R arguments:\n",
+          "  sample: ", sample, "\n",
+          "  arc: ", arc, "\n",
+          "  macs: ", macs, "\n",
+          "  outfile: ", outfile)
   x <- read_arc(arc)
   frag <- file.path(arc, "atac_fragments.tsv.gz")
   atac <- CreateChromatinAssay(counts = x$Peaks, sep = c(":", "-"), fragments = frag)

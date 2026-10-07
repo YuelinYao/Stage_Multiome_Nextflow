@@ -66,9 +66,9 @@ plot_qc_violins <- function(tab, file, title) {
   if (!requireNamespace("ggpubr", quietly = TRUE))
     stop_bad("Install ggpubr to generate QC violin plots")
   ids <- unique(tab$sample_id)
-  grDevices::pdf(file, width = max(10, length(ids) * 0.8), height = 7)
+  grDevices::pdf(file, width = max(16, length(ids) * 0.8 * 4), height = 10)
   on.exit(grDevices::dev.off(), add = TRUE)
-  for (metric in qc_metric_names) {
+  plots <- lapply(qc_metric_names, function(metric) {
     data <- data.frame(sample_id = factor(tab$sample_id, levels = ids),
                        value = tab[[metric]])
     data <- data[is.finite(data$value), , drop = FALSE]
@@ -77,11 +77,13 @@ plot_qc_violins <- function(tab, file, title) {
       fill = "sample_id", palette = "jco", trim = TRUE,
       add = "boxplot", add.params = list(width = 0.12, fill = "white")) +
       ggplot2::labs(title = paste(title, metric, sep = ": "),
-                    x = "Sample", y = metric) +
+                    x = NULL, y = metric) +
       ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+                     axis.title.x = ggplot2::element_blank(),
                      legend.position = "none")
-    print(p)
-  }
+    p
+  })
+  print(ggpubr::ggarrange(plotlist = plots, nrow = 2, ncol = 4))
 }
 qc_table <- function(sample, assays) {
   r <- assays$rna[[]]; a <- assays$atac[[]]

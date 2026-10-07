@@ -5,6 +5,11 @@ args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) >= 4L)
 summary_file <- args[1]; candidates_file <- args[2]; plot_file <- args[3]
 files <- args[-(1:3)]
+message("04_qc_review.R arguments:\n",
+        "  summary_file: ", summary_file, "\n",
+        "  candidates_file: ", candidates_file, "\n",
+        "  plot_file: ", plot_file, "\n",
+        "  input QC TSV files:\n    ", paste(files, collapse = "\n    "))
 tabs <- lapply(files, function(f) {
   # Preserve identifiers literally (including numeric-looking barcodes).
   tab <- read.delim(f, check.names = FALSE,

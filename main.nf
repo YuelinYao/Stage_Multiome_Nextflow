@@ -62,15 +62,14 @@ process QC_METRICS {
   tag "$id"
   cpus 4
   memory '48 GB'
-  publishDir "${params.outdir}/${params.stage}/qc/review", mode: 'copy'
   input:
   tuple val(id), val(arc), val(mgatk_enriched), path(peaks)
   output:
-  tuple val(id), path("${id}.metrics.tsv"), path("${id}.distributions.pdf")
+  tuple val(id), path("${id}.metrics.tsv")
   script:
   """
   # R source checksum: ${scriptsHash()}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/03_qc_metrics.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} '${id}.metrics.tsv' '${id}.distributions.pdf'
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/03_qc_metrics.R")} ${shellQuote(id)} ${shellQuote(arc)} ${shellQuote(peaks)} '${id}.metrics.tsv'
   """
 }
 
@@ -335,7 +334,7 @@ workflow {
   PEAK_SAMPLE(rows)
   COMMON_PEAKS(PEAK_SAMPLE.out.map { id, bed -> bed }.collect(), peakMin, peakMax)
   QC_METRICS(rows.combine(COMMON_PEAKS.out))
-  QC_REVIEW(QC_METRICS.out.map { id, tab, plot -> tab }.collect())
+  QC_REVIEW(QC_METRICS.out.map { id, tab -> tab }.collect())
 
   if (params.phase == 'cluster_review') {
     json_review = Channel.value(file(params.json))

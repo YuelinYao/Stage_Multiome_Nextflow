@@ -9,8 +9,8 @@
       "max": 40000
     },
     "nFeature_RNA": {
-      "min": 600,
-      "max": 8000
+      "min": 400,
+      "max": 10000
     },
     "percent.mt": {
       "min": null,
@@ -22,18 +22,18 @@
     },
     "nCount_ATAC": {
       "min": 1000,
-      "max": 30000
+      "max": 70000
     },
     "nFeature_ATAC": {
-      "min": 500,
-      "max": 15000
+      "min": 700,
+      "max": 50000
     },
     "nucleosome_signal": {
       "min": null,
       "max": 2
     },
     "TSS.enrichment": {
-      "min": 1.5,
+      "min": 2,
       "max": null
     }
   },
