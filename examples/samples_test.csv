@@ -1,0 +1,3 @@
+stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir
+E8.5,5019_Hi_3,/suffolk/WorkGenomicsD/yy605/E8.5_2026/results/01_cellranger_ARC/E8.5_Hi_1/E8_5_Hi_1/outs,/suffolk/WorkGenomicsD/yy605/E8.5_2026/results/02_mgatk/E8_5_Hi_1/final,/suffolk/DataGenomicsF/spb54/010_JA_JY_MultiOme/mgatk/E8-5-Hi-1/final
+E8.5,5019_Mid_1,/suffolk/WorkGenomicsD/yy605/E8.5_2026/results/01_cellranger_ARC/E8.5_Mid_1/E8_5_Mid_1/outs,/suffolk/WorkGenomicsD/yy605/E8.5_2026/results/02_mgatk/E8_5_Mid_1/final,/suffolk/DataGenomicsF/spb54/010_JA_JY_MultiOme/mgatk/E8-5-Mid-1/final
