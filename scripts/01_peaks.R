@@ -20,7 +20,7 @@ args <- commandArgs(trailingOnly = TRUE)
   # Remove entire peaks overlapping mm10 blacklist regions, which can show
   # artefactual enrichment even when they lie on standard chromosomes.
   # invert=TRUE retains only peaks with no blacklist overlap.
-  peaks <- GenomicRanges::subsetByOverlaps(
+  peaks <- IRanges::subsetByOverlaps(
     x = peaks, ranges = Signac::blacklist_mm10, invert = TRUE)
   if (length(peaks) == 0)
     stop_bad("No MACS peaks after chromosome and mm10 blacklist filtering: ", sample)
