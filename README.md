@@ -10,6 +10,12 @@ Use Nextflow with Java 17 or later. Load Java before installing or running Nextf
 # Example (Cambridge MBU cluster)
 module add java/17
 curl -s https://get.nextflow.io | bash
+
+# nextflow has been downloaded to 
+# /suffolk/WorkGenomicsD/yy605/software
+# add the folder to your PATH
+echo 'export PATH="/suffolk/WorkGenomicsD/yy605/software:$PATH"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 The installation command creates a `nextflow` executable in the current directory. Use `./nextflow` there, or place it in a directory on your `PATH` to use the `nextflow` commands below.
@@ -68,7 +74,7 @@ Also supply the absolute MACS3 executable path with `--macs3_path` and, when usi
 Run all phases (review, cluster review, analysis) from the project directory with the same Nextflow work directory and stage. With `-resume`, unchanged upstream tasks can be reused. Use `-profile conda` for local execution, or `-profile slurm,conda` on Slurm. Pass site-specific queue/account settings with `-c site.config`.
 
 
-Supply your complete `/absolute/path/pipeline_settings.json` from the start. Use your existing file or copy [examples/pipeline_settings.example.json](examples/pipeline_settings.example.json) and edit it for your samples. The workflow reads this file; it does not create or overwrite a settings JSON.
+Supply your complete `/absolute/path/pipeline_settings.json` from the start. Use your existing file or copy [`examples/pipeline_settings.example.json`](examples/pipeline_settings.example.json) and edit it for your samples. The workflow reads this file; it does not create or overwrite a settings JSON.
 
 First review raw QC distributions. This phase reads only the JSON's peak settings and does not apply its QC thresholds. Omitting `--json` in this phase uses default peak widths of 20 and 10,000 bp. Cluster review and analysis require the complete JSON.
 
@@ -160,6 +166,8 @@ The configuration defaults to `3`. See [Seurat `FindClusters`](https://satijalab
 "nCount_RNA": {"min": 1000, "max": 40000}
 ```
 
+This entry belongs inside `thresholds` and keeps cells with 1,000–40,000 RNA counts, including both endpoints. Shared limits apply to every sample unless overridden below. Use `min` to require a minimum value and `max` to reject values above an upper limit; for example, `"percent.mt": {"min": null, "max": 10}` keeps cells with at most 10% mitochondrial RNA. Include both keys even when one is `null`; they cannot both be `null`. The complete example lists all eight required metrics.
+
 **3. `sample_overrides`: optional sample-specific QC limits.** For each listed metric, both sample-specific bounds replace the shared bounds. Unlisted metrics retain their shared limits. Overrides may be stricter or more permissive; choose them from the sample's QC distributions. Keys must match CSV `sample_id` values. Leave this section as `{}` for shared thresholds only.
 
 ```json
@@ -167,6 +175,8 @@ The configuration defaults to `3`. See [Seurat `FindClusters`](https://satijalab
   "5019_Hi_1": {"nCount_RNA": {"min": 1200, "max": 35000}}
 }
 ```
+
+With the shared RNA count limits above, `5019_Hi_1` instead keeps cells with 1,200–35,000 RNA counts; its other seven metrics still use `thresholds`. All other samples keep the shared 1,000–40,000 range. To change only one bound, repeat the other bound in the override: `{"min": 1200, "max": 40000}`. Setting an override bound to `null` removes that side's limit for that sample; it does not inherit the shared bound.
 
 **4. `review_QC_cluster`: per-sample cluster review in 05.** These settings apply after cell QC, before you choose clusters to remove. `RNA_dims` selects PCs for neighbours and clustering. Algorithm 3 is SLM; `resolution` controls cluster granularity.
 
