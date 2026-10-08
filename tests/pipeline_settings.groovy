@@ -11,17 +11,11 @@ def expectError = { Closure action ->
     try { action() } catch (IllegalArgumentException ignored) { failed = true }
     assert failed
 }
-def settingsFile = File.createTempFile('stage-settings-', '.json')
-try {
-    settingsFile.text = JsonOutput.toJson(original)
-    assert PipelineSettings.read(settingsFile) == original
-    for (invalid in ['{"peaks": {}, "peaks": {}}',
-                     '{"WNN": {"resolution": 1, "resolution": 2}}',
-                     '{"peaks": {}} {"peaks": {}}', '[]']) {
-        settingsFile.text = invalid
-        expectError { PipelineSettings.read(settingsFile) }
-    }
-} finally { settingsFile.delete() }
+assert !PipelineSettings.analysis(original).keySet().any { it in PipelineSettings.RUN_PARAMETERS }
+expectError { PipelineSettings.analysis(original + [json: '/old/settings.json']) }
+expectError { PipelineSettings.analysis(original + [cluster_review_dir: '/old/review']) }
+def changedPaths = fresh(); changedPaths.outdir = '/different/results'; changedPaths.phase = 'analysis'
+assert PipelineSettings.normalize(changedPaths) == PipelineSettings.normalize(original)
 def base = PipelineSettings.normalize(fresh())
 assert PipelineSettings.rna(base).component_count == 50
 assert PipelineSettings.atac(base).component_count == 40
@@ -64,7 +58,9 @@ assert !PipelineSettings.copyNumber(changed).copy_number.containsKey('quantile')
 assert !PipelineSettings.copyNumber(changed).copy_number.containsKey('blacklist')
 // Integer-valued JSON widths and null PCs agree with direct R config defaults.
 assert PipelineSettings.peaks([peak_min: 20.0, peak_max: 10000.0]) == [peak_min: 20, peak_max: 10000]
-assert PipelineSettings.peaks([peak_min: 20, peak_max: 10000], '50', '5000') == [peak_min: 50, peak_max: 5000]
+assert PipelineSettings.peaks([peak_min: 50, peak_max: 5000]) == [peak_min: 50, peak_max: 5000]
+assert PipelineSettings.peaks(null) == [peak_min: 20, peak_max: 10000]
+assert PipelineSettings.peaks([peak_min: 50]) == [peak_min: 50, peak_max: 10000]
 expectError { PipelineSettings.peaks([peak_min: 20.5]) }
 expectError { PipelineSettings.peaks([peak_min: '20']) }
 expectError { PipelineSettings.peaks([peak_max: 2147483648L]) }
@@ -86,6 +82,9 @@ for (mutate in [
     { it.ATAC_processing.ATAC_integrate_dims = '2:40' },
     { it.WNN.ATAC_dims = '2:50' },
     { it.WNN.RNA_dims = '1:501' },
+    { it.WNN.plot_point_size = 0 },
+    { it.WNN.lineage_markers = ['Pou3f1', 'Pou3f1'] },
+    { it.WNN.lineage_assay = '' },
     { it.ATAC_processing.min_cutoff = 'q100' },
     { it.copy_number.mapq = 1.5 },
     { it.copy_number.reference_bed = 'relative.bed' },

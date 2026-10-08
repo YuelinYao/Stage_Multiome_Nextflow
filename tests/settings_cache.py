@@ -16,9 +16,22 @@ import tempfile
 
 REPO = Path(__file__).resolve().parents[1]
 MOCK = r'''#!/usr/bin/env python3
-import json,sys
+import json,os,sys,time
 from pathlib import Path
 a=sys.argv[2:]; step=Path(sys.argv[1]).name[:2]
+# In the baseline run, keep integration and mgatk tasks open until the sibling
+# copy-number tasks start/finish. An accidental dependency then fails promptly.
+parallel=os.environ.get('STAGE_TEST_PARALLEL_DIR'); label=None
+if parallel and step in ['07','08','09','10']:
+ root=Path(parallel)
+ label=step if step in ['07','08'] else step+'-'+(a[0] if step=='09' else a[a.index('--sample')+1])
+ (root/(label+'.started')).touch()
+ required=[f'10-{a[0]}.started'] if step=='09' else (
+  [f'{s}-{id}.finished' for s in ['09','10'] for id in ['WT_1','WT_2']] if step in ['07','08'] else [])
+ deadline=time.monotonic()+30
+ while not all((root/name).exists() for name in required):
+  if time.monotonic()>deadline: raise RuntimeError('Sibling mitochondrial tasks did not run independently: '+label)
+  time.sleep(0.1)
 settings=json.loads(Path('process_settings.json').read_text()) if Path('process_settings.json').exists() else {}
 body=json.dumps(settings,sort_keys=True)+'\n'
 def write(name): Path(name).write_text(body)
@@ -31,6 +44,7 @@ elif step=='05':
  for suffix in ['cluster_cells.tsv','cluster_summary.tsv','cluster_qc.pdf','cluster_markers.tsv']: write(a[0]+'.'+suffix)
 elif step=='06':
  for name in a[4:7]+[a[0]+'_Doublet.pdf']: write(name)
+ write(a[0]+'.singlet_barcodes.tsv')
 elif step in ['07','08']:
  prefix='rna' if step=='07' else 'atac'; section='RNA_processing' if step=='07' else 'ATAC_processing'
  write(prefix+'_unintegrated.rds')
@@ -40,10 +54,12 @@ elif step=='09': write(a[3])
 elif step=='10':
  prefix=a[a.index('--out-prefix')+1]
  for suffix in ['mtDNA_copy_number.tsv','nuclear_reference.bed','settings.txt']: write(prefix+'.'+suffix)
-elif step=='12': write(a[0])
+elif step=='12':
+ write(a[0]); write('wnn_clusters_umap.pdf'); write('Cell_lineage_umap.pdf')
 elif step=='13': write(a[1]); write(a[2])
 elif step=='14': write('cluster_markers.tsv')
 else: raise RuntimeError('Unexpected script '+sys.argv[1])
+if label: (root/(label+'.finished')).touch()
 '''
 
 def main():
@@ -75,18 +91,22 @@ def main():
                 writer.writerow(['E8.5', sample, arc, enriched, original])
         config = root / 'test.config'
         config.write_text("process { withName: '.*' { cpus = 1; memory = '128 MB' } }\n"
-                          "executor.queueSize = 2\n")
+                          "executor.queueSize = 8\nexecutor.cpus = 8\n")
         settings_file = root / 'settings.json'
         settings = json.loads((REPO / 'examples/pipeline_settings.example.json').read_text())
+        settings.update(samples=str(manifest), stage='E8.5', outdir=str(root / 'results'),
+                        macs3_path=str(macs), conda_env=None)
         env = dict(os.environ, PATH=str(mockbin) + os.pathsep + os.environ['PATH'], NXF_ANSI_LOG='false')
-        extra_args = []
-        def run(label, phase='analysis'):
+        def run(label, phase='analysis', parallel=False):
             settings_file.write_text(json.dumps(settings, indent=2))
             command = [args.nextflow, '-log', str(root / (label + '.nextflow.log')), 'run', str(REPO / 'main.nf'),
-                       '-c', str(config), '-work-dir', str(root / 'work'), '--samples', str(manifest),
-                       '--stage', 'E8.5', '--json', str(settings_file), '--macs3_path', str(macs),
-                       '--outdir', str(root / 'results'), '--phase', phase, '-resume'] + extra_args
-            result = subprocess.run(command, cwd=root, env=env, text=True, stdout=subprocess.PIPE,
+                       '-c', str(config), '-work-dir', str(root / 'work'),
+                       '-params-file', str(settings_file), '--phase', phase, '-resume']
+            run_env = dict(env)
+            if parallel:
+                parallel_dir = root / 'parallel'; parallel_dir.mkdir()
+                run_env['STAGE_TEST_PARALLEL_DIR'] = str(parallel_dir)
+            result = subprocess.run(command, cwd=root, env=run_env, text=True, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, timeout=180)
             (root / (label + '.output.log')).write_text(result.stdout)
             if result.returncode:
@@ -104,7 +124,15 @@ def main():
         run('initial-review', 'review')
         changed = run('cluster-review', 'cluster_review')
         assert changed == {'PRE_DOUBLET_REVIEW (WT_1)', 'PRE_DOUBLET_REVIEW (WT_2)'}, changed
-        run('baseline')
+        run('baseline', parallel=True)
+        markers = root / 'parallel'
+        for sample in ['WT_1', 'WT_2']:
+            copy_started = (markers / f'10-{sample}.started').stat().st_mtime_ns
+            mgatk_finished = (markers / f'09-{sample}.finished').stat().st_mtime_ns
+            assert copy_started < mgatk_finished
+            for stage in ['07', '08']:
+                assert mgatk_finished < (markers / f'{stage}.finished').stat().st_mtime_ns
+        print('Mgatk and copy-number tasks overlap while RNA/ATAC integration waits.', flush=True)
         expect(run('unchanged'), [])
         settings['WNN']['resolution'] = 0.8
         expect(run('wnn-resolution'), ['WNN_STAGE', 'ADD_MGATK', 'DEG_STAGE'])
@@ -127,7 +155,7 @@ def main():
         settings['doublet']['sample_rates']['unselected'] = 0.07
         expect(run('unselected-sample'), [])
         settings['copy_number']['ploidy'] = 4
-        expect(run('copy-number'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK', 'DEG_STAGE'])
+        expect(run('copy-number'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         # Integration switches select actual outputs/reductions at workflow level.
         settings['ATAC_processing']['integrate_atac'] = False
         expect(run('disable-atac-integration'), ['MERGE_INTEGRATE_ATAC', 'WNN_STAGE', 'ADD_MGATK', 'DEG_STAGE'])
@@ -141,11 +169,11 @@ def main():
         # Edits at the same shared path must invalidate the relevant file inputs.
         (root / 'WT_1' / 'ordinary' / 'sample.depthTable.txt').write_text('changed ordinary depth\n')
         changed = run('ordinary-depth-edit')
-        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK', 'DEG_STAGE'])
+        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         assert 'MTDNA_COPY_NUMBER (WT_1)' in changed and 'MTDNA_COPY_NUMBER (WT_2)' not in changed
         (root / 'WT_1' / 'enriched' / 'sample.A.txt.gz').write_text('changed allele counts\n')
         changed = run('enriched-count-edit')
-        expect(changed, ['MGATK_METRICS', 'MTDNA_COPY_NUMBER', 'ADD_MGATK', 'DEG_STAGE'])
+        expect(changed, ['MGATK_METRICS', 'ADD_MGATK'])
         assert 'MGATK_METRICS (WT_1)' in changed and 'MGATK_METRICS (WT_2)' not in changed
         (root / 'WT_1' / 'arc' / 'summary.csv').write_text('changed detected cells\n')
         changed = run('arc-summary-edit')
@@ -154,13 +182,13 @@ def main():
         assert 'QC_FILTER_DOUBLET (WT_1)' in changed and 'QC_FILTER_DOUBLET (WT_2)' not in changed
         (root / 'WT_1' / 'arc' / 'atac_possorted_bam.bam').write_text('changed BAM input\n')
         changed = run('arc-bam-edit')
-        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK', 'DEG_STAGE'])
+        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         assert 'MTDNA_COPY_NUMBER (WT_1)' in changed and 'MTDNA_COPY_NUMBER (WT_2)' not in changed
         reference = root / 'shared-reference.bed'; reference.write_text('chr1\t0\t100\n')
         settings['copy_number']['reference_bed'] = str(reference)
-        expect(run('shared-reference'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK', 'DEG_STAGE'])
+        expect(run('shared-reference'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         reference.write_text('chr1\t0\t1200\n')
-        expect(run('shared-reference-edit'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK', 'DEG_STAGE'])
+        expect(run('shared-reference-edit'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         settings['copy_number']['quantile'] = 0.9
         expect(run('unused-reference-quantile'), [])
         # Optional ordinary mgatk changes only the sample's copy-number task.
@@ -172,14 +200,8 @@ def main():
             writer = csv.DictWriter(handle, fieldnames=list(records[0]))
             writer.writeheader(); writer.writerows(records)
         changed = run('blank-ordinary-source')
-        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK', 'DEG_STAGE'])
+        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         assert 'MTDNA_COPY_NUMBER (WT_2)' in changed and 'MTDNA_COPY_NUMBER (WT_1)' not in changed
-        # External copy-number reuse must skip step 10 and its unused input requirements.
-        reused = root / 'reuse'; reused.mkdir()
-        for sample in ['WT_1', 'WT_2']:
-            (reused / (sample + '.mtDNA_copy_number.tsv')).write_text('reused estimates\n')
-        extra_args[:] = ['--copy_number_dir', str(reused)]
-        expect(run('external-copy-number'), ['ADD_MGATK', 'DEG_STAGE'])
         # Changed ARC reads require new peaks/common intervals and cluster review.
         (root / 'WT_1' / 'arc' / 'filtered_feature_bc_matrix.h5').write_text('changed H5 input\n')
         changed = run('arc-h5-review', 'cluster_review')

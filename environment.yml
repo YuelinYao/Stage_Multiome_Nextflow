@@ -1,4 +1,4 @@
-# Additional required R packages: DoubletFinder and cellXY.
+# Additional required R packages in the shared environment: DoubletFinder, cellXY and SCP.
 name: stage_multiome
 channels:
   - ccbbucsd

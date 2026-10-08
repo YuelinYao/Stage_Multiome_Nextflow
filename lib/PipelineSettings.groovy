@@ -1,21 +1,20 @@
-import com.fasterxml.jackson.core.JsonParser
-import com.fasterxml.jackson.databind.DeserializationFeature
-import com.fasterxml.jackson.databind.ObjectMapper
-
-/** Validate the supplied JSON, then build only the values each task consumes. */
+/** Validate loaded Nextflow parameters, then build only each task's settings. */
 class PipelineSettings {
     static final List METRICS = ['nCount_RNA', 'nFeature_RNA', 'percent.mt', 'percent.ribo',
         'nCount_ATAC', 'nFeature_ATAC', 'nucleosome_signal', 'TSS.enrichment']
 
-    // Jackson is bundled with Nextflow. Detect duplicates while parsing, before
-    // projecting maps would hide misspelled/repeated settings from R validation.
-    static Map read(File input) {
-        try {
-            new ObjectMapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
-                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(input, Map)
-        } catch (IOException error) {
-            throw new IllegalArgumentException("Invalid pipeline JSON: ${error.message}", error)
-        }
+    static final List RUN_PARAMETERS = ['samples', 'stage', 'outdir', 'macs3_path',
+                                        'conda_env', 'enable_conda', 'phase']
+    static final List ANALYSIS_SECTIONS = ['peaks', 'note', 'thresholds', 'sample_overrides',
+        'review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'copy_number']
+
+    static Map analysis(Map supplied) {
+        object(supplied, 'Pipeline parameters')
+        def unknown = supplied.keySet() - (RUN_PARAMETERS + ANALYSIS_SECTIONS)
+        if (unknown)
+            throw new IllegalArgumentException("Unknown pipeline parameters: ${unknown.join(', ')}")
+        // Drop unset sections, preserving nested null QC bounds and copy settings.
+        canonical(supplied.subMap(ANALYSIS_SECTIONS).findAll { key, value -> value != null })
     }
 
     static Map defaults() {
@@ -25,7 +24,9 @@ class PipelineSettings {
                           resolution: 2, integrate_rna: true],
          ATAC_processing: [ATAC_dims: '2:40', ATAC_integrate_dims: '1:40', algorithm: 3,
                            resolution: 2, integrate_atac: true, min_cutoff: 'q5'],
-         WNN: [RNA_dims: '1:20', ATAC_dims: '2:40', algorithm: 3, resolution: 2],
+         WNN: [RNA_dims: '1:20', ATAC_dims: '2:40', algorithm: 3, resolution: 2,
+               plot_point_size: 0.1, lineage_assay: 'SCT',
+               lineage_markers: ['Pou3f1', 'Foxa1', 'Pdgfra']],
          copy_number: [bin_size: 500, quantile: 0.985, mapq: 30, baseq: 20, ploidy: 2,
                        min_nuclear_bases: 1000, min_mt_depth: 10, keep_duplicates: false,
                        reference_bed: null, blacklist: null]]
@@ -56,7 +57,7 @@ class PipelineSettings {
             throw new IllegalArgumentException("Doublet rates must be 'auto' or numbers between zero and one")
     }
 
-    static Map peaks(value, overrideMin = null, overrideMax = null) {
+    static Map peaks(value) {
         def values = value == null ? [:] : value
         object(values, 'peaks')
         if (values.keySet().any { !(it in ['peak_min', 'peak_max']) })
@@ -65,10 +66,9 @@ class PipelineSettings {
             if (width != null && !number(width))
                 throw new IllegalArgumentException("peaks.${key} must be numeric")
         }
-        def selected = [peak_min: overrideMin != null ? overrideMin : (values.peak_min == null ? 20 : values.peak_min),
-                        peak_max: overrideMax != null ? overrideMax : (values.peak_max == null ? 10000 : values.peak_max)]
-        selected.each { key, raw ->
-            def width = raw instanceof String && raw ==~ /[0-9]+/ ? new BigDecimal(raw) : raw
+        def selected = [peak_min: values.peak_min == null ? 20 : values.peak_min,
+                        peak_max: values.peak_max == null ? 10000 : values.peak_max]
+        selected.each { key, width ->
             if (!number(width) || width < 0 || width > Integer.MAX_VALUE ||
                 width != Math.floor(width.doubleValue()))
                 throw new IllegalArgumentException("${key} must be a nonnegative integer within the R integer range")
@@ -80,11 +80,8 @@ class PipelineSettings {
     }
 
     static Map normalize(Map supplied) {
+        supplied = analysis(supplied)
         object(supplied, 'Pipeline JSON')
-        def allowed = ['peaks', 'note', 'thresholds', 'sample_overrides', 'review_QC_cluster',
-                       'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'copy_number']
-        if (supplied.keySet().any { !(it in allowed) })
-            throw new IllegalArgumentException('Unknown or obsolete pipeline JSON section')
         object(supplied.thresholds, 'thresholds')
         if (supplied.thresholds.keySet() != METRICS.toSet())
             throw new IllegalArgumentException("thresholds must contain exactly ${METRICS.join(', ')}")
@@ -120,6 +117,15 @@ class PipelineSettings {
                     throw new IllegalArgumentException("${section}.${key} must be true or false")
             }
         }
+        def wnnPlot = result.WNN
+        if (!number(wnnPlot.plot_point_size) || wnnPlot.plot_point_size <= 0)
+            throw new IllegalArgumentException('WNN.plot_point_size must be positive')
+        if (!(wnnPlot.lineage_assay instanceof String) || !wnnPlot.lineage_assay.trim())
+            throw new IllegalArgumentException('WNN.lineage_assay must be a nonempty assay name')
+        def markers = wnnPlot.lineage_markers
+        if (!(markers instanceof List) || markers.size() < 1 ||
+            !markers.every { it instanceof String && it.trim() } || markers.unique(false).size() != markers.size())
+            throw new IllegalArgumentException('WNN.lineage_markers must contain unique nonempty gene symbols')
         def pc = dimensions(result.doublet.PC_dims, 'doublet.PC_dims')
         if (pc[0] != 1 || pc[1] > 50) throw new IllegalArgumentException('doublet.PC_dims must be 1:K with K <= 50')
         def doublet = result.doublet

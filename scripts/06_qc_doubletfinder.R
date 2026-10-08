@@ -24,7 +24,6 @@ rna <- subset(assays$rna, cells = keep)
 # clustering is repeated here: exclusions refer to the exact reviewed labels.
 reviewed_clusters <- read_reviewed_qc_clusters(args[8], sample, tab, colnames(rna))
 rna$reviewed_qc_cluster <- unname(reviewed_clusters[colnames(rna)])
-rna$pre_doublet_clusters <- rna$reviewed_qc_cluster
 rna <- remove_qc_clusters(rna, cfg$doublet$exclude_clusters)
 cluster_pass <- ncol(rna)
 message(sample, ": reviewed-cluster removal retained ", cluster_pass, " / ", length(keep),
@@ -60,7 +59,8 @@ if (anyNA(classifications) || any(!classifications %in% c("Singlet", "Doublet"))
 # uses the same configured PCs as the sweep and doublet classification.
 rna$DoubletFinder <- factor(classifications, levels = c("Singlet", "Doublet"))
 rna <- RunUMAP(rna, reduction = "pca", dims = dims, seed.use = 123, verbose = FALSE)
-p <- DimPlot(rna, reduction = "umap", group.by = "DoubletFinder") +
+p <- DimPlot(rna, reduction = "umap", group.by = "DoubletFinder",
+  cols = c(Singlet = "#808080", Doublet = "#ff0000")) +
   ggplot2::ggtitle(paste0(sample, ": DoubletFinder")) +
   ggplot2::theme_bw() +
   ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5))
@@ -79,6 +79,10 @@ rna <- RenameCells(rna, add.cell.id = sample)
 atac <- RenameCells(atac, add.cell.id = sample)
 stopifnot(identical(colnames(rna), colnames(atac)))
 saveRDS(rna, args[5]); saveRDS(atac, args[6])
+# Both mitochondrial branches receive exactly these retained original barcodes.
+# Keep this small handoff table in the task directory; no Seurat reload is needed.
+write_tsv(data.frame(sample_id = sample, barcode = as.character(rna$barcode)),
+  file.path(dirname(args[5]), paste0(sample, ".singlet_barcodes.tsv")))
 write_tsv(data.frame(sample_id = sample, raw_joint = nrow(tab), qc_pass = length(keep),
   arc_detected_cells = arc_detected_cells, rate_source = rate_source,
   qc_removed = nrow(tab) - length(keep),

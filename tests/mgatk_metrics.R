@@ -10,9 +10,9 @@ expect_error <- function(expr) {
 run_checks <- function() {
   task_dir <- tempfile(); dir.create(task_dir)
   on.exit(unlink(task_dir, recursive = TRUE), add = TRUE)
-  positions <- c(5019, 15200, 16232)
-  refs <- c('A', 'A', 'A')
-  alts <- c('G', 'G', 'T')
+  positions <- c(1781, 1866, 3009, 3823, 5019, 5024, 13614, 13715, 15200, 16232)
+  refs <- c('C', 'A', 'G', 'T', 'A', 'C', 'C', 'C', 'A', 'A')
+  alts <- c('T', 'G', 'T', 'C', 'G', 'T', 'T', 'T', 'G', 'T')
   rows <- unlist(lapply(positions, function(pos)
     paste(rep(c('A', 'C', 'G', 'T'), each = 2), pos,
           rep(c('fwd', 'rev'), 4), sep = '-')))
@@ -58,7 +58,7 @@ run_checks <- function() {
     tab$Allele_ref_all_5019[1] == 9, tab$Allele_mut_all_5019[1] == 21)
   stopifnot(identical(tab$cell_id, colnames(obj)), identical(tab$barcode, bcs),
     identical(tab$mgatk_matched, c(TRUE, FALSE, TRUE, TRUE)),
-    tab$mtDNA_depth[1] == 30, tab$mtDNA_count[1] == 36,
+    tab$mtDNA_depth[1] == 30, tab$mtDNA_count[1] == 120,
     all(is.na(tab[2, setdiff(names(tab), c('cell_id', 'sample_id', 'barcode', 'mgatk_matched'))])),
     tab$Depth_5019[1] == 12, tab$Informative_depth_5019[1] == 10,
     tab$A_5019[1] == 3, tab$G_5019[1] == 7,
@@ -70,9 +70,49 @@ run_checks <- function() {
     tab$Depth_all_5019[1] == 36, tab$Informative_depth_all_5019[1] == 30,
     tab$Heteroplasmy_all_5019_covered[1] == 0.7,
     tab$Depth_all_5019[4] == 306, is.na(tab$Heteroplasmy_all_5019_covered[4]),
-    !any(grepl('5024', names(tab))))
+    tab$Heteroplasmy_5024[1] == 0.7,
+    tab$C_5024[1] == 3, tab$T_5024[1] == 7,
+    tab$Depth_all_5024[1] == 84,
+    tab$Informative_depth_all_5024[1] == 70,
+    tab$Allele_ref_all_5024[1] == 41, tab$Allele_mut_all_5024[1] == 29,
+    abs(tab$Heteroplasmy_all_5024[1] - 29/70) < 1e-12,
+    is.na(tab$Heteroplasmy_all_5024_covered[4]),
+    !any(grepl('all_5024_reciprocal', names(tab))))
   # Every per-site fraction follows its stated allele definition.
   for (pos in positions) stopifnot(tab[[paste0('Heteroplasmy_', pos)]][1] == 0.7)
+
+  # Unequal coverage verifies that pools sum counts, not site fractions.
+  original_counts <- mgatk$counts
+  mgatk$counts[, 'covered'] <- 0
+  mgatk$counts['A-5019-fwd', 'covered'] <- 10
+  mgatk$counts['G-15200-rev', 'covered'] <- 90
+  # A reciprocal 5024 haplotype has reference bases at five linked sites,
+  # but alternate bases at 5024 and 13715, exactly as in YY_06.
+  pool_positions <- c(1781, 1866, 3009, 3823, 5024, 13614, 13715)
+  for (pos in pool_positions) {
+    i <- match(pos, positions)
+    base <- if (pos %in% c(5024, 13715)) alts[i] else refs[i]
+    mgatk$counts[paste(base, pos, 'fwd', sep = '-'), 'covered'] <- 10
+  }
+  weighted <- run()
+  stopifnot(weighted$Heteroplasmy_all_5019[1] == 0.9,
+    weighted$Heteroplasmy_all_5024[1] == 1,
+    weighted$Heteroplasmy_all_5024_covered[1] == 1)
+  # The opposite haplotype must give zero, whatever the sample label.
+  mgatk$counts[, 'covered'] <- 0
+  for (pos in pool_positions) {
+    i <- match(pos, positions)
+    base <- if (pos %in% c(5024, 13715)) refs[i] else alts[i]
+    mgatk$counts[paste(base, pos, 'fwd', sep = '-'), 'covered'] <- 10
+  }
+  for (label in c('5019_example', '5024_example', 'WT_example')) {
+    env$args <- c(label, input, 'mock', output)
+    for (expr in expressions) eval(expr, env)
+    result <- read.delim(output)
+    stopifnot(result$Heteroplasmy_all_5024[1] == 0,
+              result$Heteroplasmy_all_5024_covered[1] == 0)
+  }
+  mgatk$counts <- original_counts
 
   # Actual 13 must attach the expanded table by cell ID, not input row order.
   tab <- tab[c(4, 2, 1, 3), ]; env$write_tsv(tab, output)
@@ -82,7 +122,9 @@ run_checks <- function() {
   attached <- readRDS(final)
   stopifnot(identical(colnames(attached), colnames(obj)),
     identical(as.character(attached$sample_id), rep('001', ncol(obj))),
-    attached$Heteroplasmy_all_5019[1] == 0.7, is.na(attached$Heteroplasmy_all_5019[2]))
+    attached$Heteroplasmy_all_5019[1] == 0.7,
+    attached$Heteroplasmy_5024[1] == 0.7,
+    abs(attached$Heteroplasmy_all_5024[1] - 29/70) < 1e-12, is.na(attached$Heteroplasmy_all_5019[2]))
   # All-NA numeric fractions retain numeric metadata after a TSV round trip.
   all_missing <- tab
   all_missing$Heteroplasmy_15200_covered <- NA_real_
@@ -157,6 +199,8 @@ run_checks <- function() {
 
   original <- mgatk
   mgatk$refallele$ref[mgatk$refallele$pos == 15200] <- 'C'
+  expect_error(run()); mgatk <- original
+  mgatk$refallele$ref[mgatk$refallele$pos == 5024] <- 'A'
   expect_error(run()); mgatk <- original
   rownames(mgatk$counts)[2] <- rownames(mgatk$counts)[1]
   expect_error(run()); mgatk <- original
