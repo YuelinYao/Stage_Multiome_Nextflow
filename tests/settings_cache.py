@@ -111,7 +111,7 @@ def main():
             (root / (label + '.output.log')).write_text(result.stdout)
             if result.returncode:
                 raise AssertionError(f'{label} failed:\n{result.stdout}')
-            trace = root / 'results' / 'execution_trace.txt'
+            trace = root / 'results' / 'E8.5' / 'reports' / f'execution_trace_{phase}.txt'
             rows = list(csv.DictReader(trace.open(), delimiter='\t'))
             (root / (label + '.trace.tsv')).write_text(trace.read_text())
             completed = {row['name'] for row in rows if row['status'] == 'COMPLETED'}
@@ -146,14 +146,20 @@ def main():
         settings = dict(reversed(list(settings.items())))
         settings['note'] = 'This note does not control analysis.'
         expect(run('format-note'), [])
-        settings['doublet']['sample_rates'] = {'WT_1': 0.04, 'unselected': 0.06}
+        settings['doublet']['sample_rates'] = {'WT_1': 0.04}
         changed = run('sample-doublet')
         expect(changed, ['QC_FILTER_DOUBLET', 'MERGE_INTEGRATE_RNA', 'MERGE_INTEGRATE_ATAC',
                          'MGATK_METRICS', 'MTDNA_COPY_NUMBER', 'WNN_STAGE', 'ADD_MGATK', 'DEG_STAGE'])
         assert 'QC_FILTER_DOUBLET (WT_1)' in changed and 'QC_FILTER_DOUBLET (WT_2)' not in changed
         expect(run('cluster-review-doublet-edit', 'cluster_review'), [])
+        # Settings for a sample ID absent from the manifest are rejected, not ignored.
         settings['doublet']['sample_rates']['unselected'] = 0.07
-        expect(run('unselected-sample'), [])
+        try:
+            run('unselected-sample')
+            raise RuntimeError('Unknown sample ID was accepted')
+        except AssertionError as error:
+            assert 'Sample IDs in pipeline JSON not found' in str(error), error
+        del settings['doublet']['sample_rates']['unselected']
         settings['copy_number']['ploidy'] = 4
         expect(run('copy-number'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         # Integration switches select actual outputs/reductions at workflow level.

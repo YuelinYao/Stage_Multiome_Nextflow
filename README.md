@@ -1,8 +1,17 @@
-# Per-stage mouse mitochondrial-variant Multiome workflow
+# Per-stage mouse embryo single-cell multiome workflow
 
-This Nextflow workflow analyses one mouse developmental stage at a time (mm10). It calls peaks from each sample’s ATAC fragments, creates one common peak set for the stage, reviews eight RNA/ATAC QC metrics, removes reviewed low-quality clusters and RNA doublets per sample, preprocesses and integrates RNA and ATAC, estimates mtDNA copy number, builds WNN clusters, attaches heteroplasmy and copy-number metadata, and identifies RNA markers for each WNN cluster.
+This Nextflow workflow analyses mouse single-cell multiome data (RNA + ATAC, mm10), one developmental stage at a time. It performs comprehensive QC and preprocessing, integrates the RNA and ATAC modalities across samples, calculates mtDNA heteroplasmy and copy number for each cell, and identifies marker genes for each WNN cluster to support cell-type annotation.
 
 ## Requirements and inputs
+
+### 1\. Software and packages
+
+Download the pipeline from GitHub:
+
+```bash
+git clone https://github.com/YuelinYao/Stage_Multiome_Nextflow.git
+cd Stage_Multiome_Nextflow
+```
 
 Use Nextflow with Java 17 or later. Load Java before installing or running Nextflow:
 
@@ -15,6 +24,7 @@ curl -s https://get.nextflow.io | bash
 # /suffolk/WorkGenomicsD/yy605/software
 # add the folder to your PATH
 echo 'export PATH="/suffolk/WorkGenomicsD/yy605/software:$PATH"' >> ~/.bashrc
+# Avoid home quota issues
 export NXF_HOME=/suffolk/WorkGenomicsD/yy605/.nextflow
 source ~/.bashrc
 ```
@@ -28,26 +38,32 @@ Use these existing environments when running this project:
 | `conda_env` | `/suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome` |
 | `macs3_path` | `/suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3` |
 
-Enable the Conda profile with `-profile conda` for local execution or `-profile slurm,conda` for Slurm. Nextflow uses the R environment above for each task and calls MACS3 through its explicit executable path. Both paths must be accessible on every execution node.
+Enable the Conda profile with `-profile conda` for local execution or `-profile slurm,conda` for Slurm. Nextflow uses the R environment above for each task and calls MACS3 through its explicit executable path. Both paths must be accessible on every execution node. [site.config](site.config) contains process CPUs, memory and running times; queue/account settings can be added there when required by your cluster.
 
-Package versions for the existing `stage_multiome` Conda environment are recorded in [environment.yml](environment.yml). This is an exported Linux environment, including its dependencies and installation prefix. Step 12 also requires your installed `SCP` package in the shared R environment.
+Package versions for the existing `stage_multiome` Conda environment are recorded in [environment.yml](environment.yml). This is an exported Linux environment, including its dependencies and installation prefix.
 
-The sample CSV must contain only `stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir`; see [examples/samples.csv](examples/samples.csv). For example:
+### 2\. Input files
+
+#### Sample sheet (`samples.csv`)
+
+The sample CSV lists one sample per row and must contain only `stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir`; see [examples/samples.csv](examples/samples.csv). For example:
 
 ```csv
 stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir
 E8.5,5019_Hi_1,/path/to/arc/outs,/path/to/mgatk_enriched/final,
 ```
 
-`ALL_STAGE` is reserved for combined QC summaries. Sample IDs must be unique within each stage, start with a letter or number, and contain only letters, numbers, `_`, `.` or `-`. Sample IDs are workflow labels and do not need to match upstream Cell Ranger or mgatk run names; the paths must identify the corresponding sample outputs, and sample-specific pipeline JSON keys must match these IDs. All execution nodes must be able to read the absolute input paths:
+Sample IDs must be unique within each stage, start with a letter or number, and contain only letters, numbers, `_`, `.` or `-`; `ALL_STAGE` is reserved for combined QC summaries. Sample IDs are workflow labels and do not need to match upstream Cell Ranger or mgatk run names. Sample-specific keys in the pipeline JSON must match these IDs. The `stage` set in the pipeline JSON selects which rows are analysed (see [Pipeline settings JSON](#pipeline-settings-json)).
 
-| Input | Required content |
+#### What each path must contain
+
+Use absolute paths that all execution nodes can read:
+
+| Column | Required content |
 | --- | --- |
 | `arc_out` | Cell Ranger ARC `outs` directory containing `filtered_feature_bc_matrix.h5`, `atac_fragments.tsv.gz` and its `.tbi` index; analysis also requires `summary.csv` for detected-cell reporting and `atac_possorted_bam.bam` for step 10; `per_barcode_metrics.csv` supplies barcode translation when present |
 | `mgatk_enriched_dir` | Required mgatk output used for step 09 heteroplasmy/depth metrics, readable by `Signac::ReadMGATK`, usually the `final` directory |
 | `mgatk_dir` | Ordinary mgatk output used automatically by step 10 for `mtDNA_CN_normalised`; may be blank, in which case this estimate remains `NA` |
-
-Step 09 heteroplasmy/depth measurements use `mgatk_enriched_dir`. During analysis, step 10 uses both CSV directories and step 13 attaches its results automatically. Supply `mgatk_dir` to calculate the ordinary-mgatk estimate as well. The current `examples/samples.csv` supplies both paths. Leave `mgatk_dir` blank for samples without an ordinary mgatk result. For WT samples, both columns may point to the same output; their two copy-number estimates then use the same mitochondrial depth. The chosen enriched output may have any directory name, including a WT directory without an `_enriched` suffix. Both sources are matched to the retained singlet barcodes.
 
 Gene symbols, the reference genome and barcodes are requirements for the existing data, not additional files or CSV columns:
 
@@ -57,74 +73,89 @@ Gene symbols, the reference genome and barcodes are requirements for the existin
 | mm10 reference | ARC and mgatk outputs must use a compatible mm10 reference; the workflow supplies mm10 gene annotation through `EnsDb.Mmusculus.v79` and validates mgatk reference alleles at the ten mitochondrial sites listed in Step 09 (including A at position 5019). No reference FASTA is supplied to this workflow |
 | Matching original 10x barcodes | Cell identifiers already stored in ARC and mgatk outputs; the workflow uses them to match mitochondrial measurements to retained cells. At least some retained cells must match; unmatched cells retain missing mgatk measurements |
 
-Set `samples` to your sample CSV path and `stage` to the stage to analyse in the JSON supplied with `-params-file`. For example, `"stage": "E8.5"` selects all rows labelled `E8.5`, including WT and mutant samples, and excludes other stages. Matching is case-sensitive; the workflow stops if no rows match.
+## Overview of the pipeline
 
-Selected samples share a common peak set and are merged for stage-level RNA, ATAC and WNN analysis during the analysis phase. Outputs are written under `<outdir>/<stage>/`, such as `<outdir>/E8.5/`. Use the same `stage` for review, cluster review and analysis.
+The workflow analyses one developmental stage at a time and is run three times for that stage, once per phase, selected with `--phase`. Between phases you inspect the outputs and edit the pipeline JSON, so QC thresholds and low-quality clusters are chosen from your own data rather than fixed in advance. With `-resume`, each phase reuses the completed tasks of the previous one.
 
-Set `macs3_path` to the absolute MACS3 executable path and, when using the Conda profile, set `conda_env` to the existing environment path. One JSON contains these run parameters and all analysis settings. Nextflow loads it with `-params-file`; see the [Nextflow parameter-file documentation](https://docs.seqera.io/nextflow/reference/cli/run#-params-file).
-
-## Run order: review, cluster review, analysis
-
-Run all phases from the project directory with the same Nextflow work directory, `outdir` and `stage`. With `-resume`, unchanged upstream tasks can be reused. Use `-profile conda` for local execution, or `-profile slurm,conda` on Slurm. [site.config](site.config) contains process CPUs, memory and running times; queue/account settings can be added there when required by your cluster.
-
-Supply your complete `/absolute/path/pipeline_settings.json` from the start. Use your existing file or copy [examples/pipeline_settings.example.json](examples/pipeline_settings.example.json) and edit its paths and settings. The example includes your shared R environment and MACS3 executable paths. The workflow does not create or overwrite this file. Relative paths resolve from the directory where you launch Nextflow; absolute paths are clearer when running on the cluster.
-
-First run `--phase review` to review raw QC distributions. This phase uses the `peaks` settings and does not apply QC thresholds. Omitted peak widths default to 20 and 10,000 bp.
-
-```bash
-nextflow run main.nf \
-  -params-file /absolute/path/pipeline_settings.json \
-  --phase review \
-  -profile slurm,conda -c site.config -resume
-```
-
-Inspect `<outdir>/<stage>/qc/review/`, then edit the QC bounds in that same JSON. Thresholds in the example are illustrative, not recommendations for your samples. Every shared QC metric needs at least one numeric bound before cluster review or analysis. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
-
-Next inspect QC-passing clusters with `--phase cluster_review`:
-
-```bash
-nextflow run main.nf \
-  -params-file /absolute/path/pipeline_settings.json \
-  --phase cluster_review \
-  -profile slurm,conda -c site.config -resume
-```
-
-Inspect `<outdir>/<stage>/qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. Analysis requires each sample's saved `<sample>.cluster_cells.tsv` in this folder. If QC thresholds, `review_QC_cluster` settings, input data, seeds or package versions change, review the resulting clusters again because their IDs may change.
-
-Preserve the QC thresholds and `review_QC_cluster` settings used to generate those tables. Analysis uses their exact saved cluster labels. Finally run `--phase analysis` with your reviewed settings:
-
-```bash
-nextflow run main.nf \
-  -params-file /absolute/path/pipeline_settings.json \
-  --phase analysis \
-  -profile slurm,conda -c site.config -resume
-```
-
-After each sample finishes step 06, `MGATK_METRICS` and `MTDNA_COPY_NUMBER` can be submitted independently. Stage-level RNA and ATAC preprocessing start once all selected samples have finished step 06. These four branches can run concurrently when Nextflow and the cluster have capacity. `WNN_STAGE` waits for RNA and ATAC outputs. `DEG_STAGE` uses its completed `wnn.rds` directly and can run while mitochondrial tasks finish. `ADD_MGATK` waits for WNN plus all mgatk and copy-number tables.
+| Phase | Steps | What it does | What you do next |
+| --- | --- | --- | --- |
+| 1\. `review` | 01–04 | 01: call ATAC peaks per sample<br>02: merge them into one common peak set for the stage<br>03: calculate eight RNA/ATAC QC metrics per cell<br>04: summarise the metrics (MAD-based candidate bounds, violin plots)<br>No cells are removed. | Inspect `<outdir>/<stage>/qc/review/`, then set the QC `thresholds` (and any `sample_overrides`) in the JSON. |
+| 2\. `cluster_review` | 05 | 05: apply your QC thresholds to each sample, cluster the QC-passing cells on RNA, and write per-cluster QC summaries, violin plots and marker genes<br>No cells are removed. | Inspect `<outdir>/<stage>/qc/cluster_review/`, then list low-quality cluster IDs per sample in `doublet.exclude_clusters`. |
+| 3\. `analysis` | 06–14 | 06: remove QC-failing cells and the excluded clusters, then remove doublets with DoubletFinder<br>07–08: preprocess RNA and ATAC per sample, then merge and integrate each modality across samples<br>09–10: measure 5019/5024 heteroplasmy and mtDNA copy number per cell<br>11–12: combine RNA and ATAC and build WNN clusters<br>13: attach the mitochondrial measurements to the WNN object<br>14: find RNA markers for each WNN cluster | Use `<outdir>/<stage>/objects/wnn_mgatk.rds` and the other published results. |
 
 ```mermaid
 flowchart TD
-  REVIEW["01–04: peaks and QC review"] --> THRESHOLDS["Edit QC thresholds"]
-  THRESHOLDS --> CLUSTER_REVIEW["05: QC-passing cluster review"]
-  CLUSTER_REVIEW --> EXCLUSIONS["Choose clusters to exclude"]
-  EXCLUSIONS --> QC["06: QC → cluster removal → DoubletFinder"]
-  QC --> RNA["07: stage RNA"]
-  QC --> ATAC["08: stage ATAC"]
-  QC --> MGATK["09: 5019 and 5024 heteroplasmy"]
-  QC --> CN["10: mtDNA copy number"]
-  RNA --> WNN["12: WNN"]
-  ATAC --> WNN
-  WNN --> ADD["13: attach mitochondrial metadata"]
-  MGATK --> ADD
-  CN --> ADD
-  WNN --> DEG["14: RNA cluster markers"]
+  subgraph P1["Phase 1: review"]
+    REVIEW["01–04: peaks and QC metrics"]
+  end
+  REVIEW --> THRESHOLDS["You: set QC thresholds"]
+  subgraph P2["Phase 2: cluster_review"]
+    CLUSTER_REVIEW["05: cluster QC-passing cells"]
+  end
+  THRESHOLDS --> CLUSTER_REVIEW
+  CLUSTER_REVIEW --> EXCLUSIONS["You: choose clusters to exclude"]
+  subgraph P3["Phase 3: analysis"]
+    QC["06: QC → cluster removal → DoubletFinder"]
+    QC --> RNA["07: RNA preprocessing and integration"]
+    QC --> ATAC["08: ATAC preprocessing and integration"]
+    QC --> MGATK["09: 5019 and 5024 heteroplasmy"]
+    QC --> CN["10: mtDNA copy number"]
+    RNA --> WNN["11–12: WNN clustering"]
+    ATAC --> WNN
+    WNN --> ADD["13: attach mitochondrial metadata"]
+    MGATK --> ADD
+    CN --> ADD
+    WNN --> DEG["14: RNA cluster markers"]
+  end
+  EXCLUSIONS --> QC
 ```
 
-Step 00 supplies shared functions. Step 11 is a legacy helper and is not invoked by Nextflow; step 12 combines the modalities.
+**Before you start:** copy [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) to your own file and edit its paths and settings; use that same file for all three phases. Editing the example inside the repository would conflict with `git pull`. The commands below use the example path; replace it with your copy.
+
+**Where to launch:** `-resume` continues the most recent run recorded in the launch directory's `.nextflow/` folder, so start every phase of a stage from the same directory. When processing several stages side by side, launch each stage from its own directory, using absolute paths for `main.nf`, `site.config` and the JSON.
+
+### Phase 1: review
+
+Run `--phase review` to calculate raw QC distributions. This phase uses the `peaks` settings and does not apply QC thresholds.
+
+```bash
+NXF_VER=25.10.8 nextflow run /nfs4/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/pipeline_settings.example.json \
+  --phase review \
+  -profile slurm,conda -c /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/site.config -resume
+```
+
+Then inspect `<outdir>/<stage>/qc/review/` and set the QC bounds in your JSON. Thresholds in the example are illustrative, not recommendations for your samples. Every shared QC metric needs at least one numeric bound before cluster review or analysis. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
+
+### Phase 2: cluster review
+
+Run `--phase cluster_review` to cluster the QC-passing cells of each sample:
+
+```bash
+NXF_VER=25.10.8 nextflow run /nfs4/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/pipeline_settings.example.json \
+  --phase cluster_review \
+  -profile slurm,conda -c /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/site.config -resume
+```
+
+Then inspect `<outdir>/<stage>/qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. If QC thresholds, `review_QC_cluster` settings, input data, seeds or package versions change, rerun cluster review because cluster IDs may change.
+
+### Phase 3: analysis
+
+Run `--phase analysis` with your reviewed settings. Keep the QC thresholds and `review_QC_cluster` settings used for cluster review: analysis reads each sample's saved `<sample>.cluster_cells.tsv` and uses those exact cluster labels.
+
+```bash
+NXF_VER=25.10.8 nextflow run /nfs4/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/pipeline_settings.example.json \
+  --phase analysis \
+  -profile slurm,conda -c /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/site.config -resume
+```
+
+Steps 09 and 10 start for each sample as soon as it finishes step 06. RNA and ATAC preprocessing (07–08) start once all samples have finished step 06, and these branches run in parallel when the cluster has capacity. WNN (11–12) waits for both 07 and 08. Step 14 starts as soon as WNN is ready, while step 13 waits for WNN plus all mitochondrial tables.
 
 ## Pipeline settings JSON
 
-Supply this file through `-params-file`. It contains both run parameters and analysis sections at the top level. The sections below follow the workflow order; JSON key order itself does not affect execution. See [examples/pipeline_settings.example.json](examples/pipeline_settings.example.json) for the complete structure. Its QC thresholds are illustrative and must be reviewed for your samples.
+Supply this file through `-params-file`. It contains both run parameters and analysis sections at the top level. The sections below follow the workflow order; JSON key order itself does not affect execution. See [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) for the complete structure. Its QC thresholds are illustrative and must be reviewed for your samples.
 
 Section and parameter names are case-sensitive. Unknown parameters/sections and invalid sample-specific settings are rejected. Use unique JSON keys. Every shared QC metric must have valid bounds; sample overrides replace the bounds for their named metrics.
 
@@ -163,6 +194,8 @@ The configuration defaults to `3`. See [Seurat `FindClusters`](https://satijalab
 "macs3_path": "/suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3",
 "conda_env": "/suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome"
 ```
+
+`stage` selects every sample-sheet row with that label, for example all WT and mutant rows labelled `E8.5`, and excludes other stages; matching is case-sensitive and the workflow stops if no rows match. The selected samples share one common peak set and are merged for stage-level RNA, ATAC and WNN analysis. `macs3_path` must be the absolute MACS3 executable path, and `conda_env` the existing environment path used by the Conda profile. Nextflow loads this JSON with `-params-file`; see the [Nextflow parameter-file documentation](https://docs.seqera.io/nextflow/reference/cli/run#-params-file).
 
 Select the phase on the command line with `--phase review`, `--phase cluster_review` or `--phase analysis`; the default is `review`. Keep phase selection outside the JSON so you can reuse the same settings file for all three runs. `outdir` is the output root; stage results go under `<outdir>/<stage>/`. Keep `samples`, `stage`, `outdir` and peak limits consistent across phases. Profiles and process resources remain Nextflow configuration options (`-profile` and `-c site.config`).
 
@@ -282,7 +315,7 @@ All dimension strings are inclusive: `"1:20"` selects components 1–20. Each an
 
 ## Output files and directory structure
 
-Published results are organised under `<outdir>/<stage>/`. For example, `"outdir": "stage_results"` and `"stage": "E8.5"` in your parameter file create the structure below after completing all three phases. `<sample>` is the `sample_id` from your CSV, and per-sample files are repeated for each selected sample.
+Published results are organised under `<outdir>/<stage>/`. For example, `"outdir": "stage_results"` and `"stage": "E8.5"` in your parameter file create the structure below after completing all three phases. `<sample>` is the `sample_id` from your CSV, and per-sample files are repeated for each selected sample. Nextflow task work directories are kept in `<outdir>/<stage>/work/`, and one execution trace, report and timeline per phase in `<outdir>/<stage>/reports/` (for example `reports/execution_trace_analysis.txt`).
 
 ```text
 stage_results/
@@ -323,8 +356,13 @@ stage_results/
     │   ├── wnn.rds
     │   ├── wnn_mgatk.rds
     │   └── all_cells_mtDNA.tsv
-    └── deg/
-        └── cluster_markers.tsv
+    ├── deg/
+    │   └── cluster_markers.tsv
+    ├── reports/                       # one set per phase: review, cluster_review, analysis
+    │   ├── execution_report_<phase>.html
+    │   ├── execution_timeline_<phase>.html
+    │   └── execution_trace_<phase>.txt
+    └── work/                          # Nextflow task directories (intermediate files, logs)
 ```
 
 | Files or directory | Contents and use |
@@ -349,7 +387,7 @@ stage_results/
 
 The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `copy_number/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled. Each distinct RNA/ATAC analysis object is saved once; WNN uses `rna_integrated.rds` or `rna_unintegrated.rds` and `atac_integrated.rds` or `atac_unintegrated.rds` according to those switches.
 
-The per-sample `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints remain in the `QC_FILTER_DOUBLET` task directory under Nextflow’s `work/` directory; they are not copied into the published results. Task logs (`.command.log`, `.command.err`, `.command.out`) are also under `work/`, while `.nextflow.log` is in the launch directory. Keep `work/` and `.nextflow/` when resuming runs. ATAC-containing RDS objects refer to the original fragment files, so those shared input paths must remain accessible when using fragment-based Signac functions later.
+The per-sample `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints remain in the `QC_FILTER_DOUBLET` task directory under `<outdir>/<stage>/work/`; they are not copied into the published results. Task logs (`.command.log`, `.command.err`, `.command.out`) are also under `work/`, while `.nextflow.log` is in the launch directory. Keep `work/` and `.nextflow/` when resuming runs. ATAC-containing RDS objects refer to the original fragment files, so those shared input paths must remain accessible when using fragment-based Signac functions later.
 
 ## Details for each step
 
@@ -397,7 +435,7 @@ Output: `<outdir>/<stage>/peaks/common_peaks.bed`. 
 
 Per-sample `<sample>.metrics.tsv` tables remain internal files in the Nextflow work directory and are combined into `all_cells_qc_metrics.tsv`. Per-sample distribution PDFs are not generated. Published review outputs are saved under `<outdir>/<stage>/qc/review/`, for example `results/E8.5/qc/review/`.
 
-QC violin plots use the shared `plot_qc_violins()` function in [scripts/00_common.R](scripts/00_common.R), with all eight metrics on one page in two rows and four columns. Edit this function to change the theme or font sizes for stage-level and cluster-review QC plots.
+QC violin plots use the shared `plot_qc_violins()` function in [scripts/00\_common.R](scripts/00_common.R), with all eight metrics on one page in two rows and four columns. Edit this function to change the theme or font sizes for stage-level and cluster-review QC plots.
 
 Categorical plots use the supplied 100-colour `plot_palette` in `scripts/00_common.R`, preserving its order and repeated entries. `plot_group_colors()` assigns colours in group order and repeats the palette for more than 100 groups. QC violins keep the same group colours across all eight panels; DoubletFinder UMAP plots use grey (`#808080`) for Singlet and red (`#ff0000`) for Doublet. Edit `plot_palette` to change these colours.
 
@@ -594,7 +632,7 @@ Outputs: `STAGE/objects/wnn_mgatk.rds` and `all_cells_mtDNA.tsv`.
 
 ### Step 14: RNA markers for each WNN cluster
 
-`14_cluster_markers.R` reads step 12's `wnn.rds` directly, joins RNA layers, uses `wsnn_clusters` as identities, and calls `FindAllMarkers` on the RNA assay. It starts after WNN completes, independently of step 13's mitochondrial metadata attachment. It compares each cluster with all other cells using Wilcoxon tests, `only.pos = TRUE`, `min.pct = 0.1` and `logfc.threshold = 0.25`. The output retains only rows with finite `p_val_adj < 0.05`. A single cluster or no significant markers produces a header-only TSV that remains readable.
+`14_cluster_markers.R` reads step 12’s `wnn.rds` directly, joins RNA layers, uses `wsnn_clusters` as identities, and calls `FindAllMarkers` on the RNA assay. It starts after WNN completes, independently of step 13’s mitochondrial metadata attachment. It compares each cluster with all other cells using Wilcoxon tests, `only.pos = TRUE`, `min.pct = 0.1` and `logfc.threshold = 0.25`. The output retains only rows with finite `p_val_adj < 0.05`. A single cluster or no significant markers produces a header-only TSV that remains readable.
 
 Output: `STAGE/deg/cluster_markers.tsv`. These are positive RNA cluster markers; this step does not perform ATAC differential accessibility, sample-level pseudobulk tests or Hi/Lo comparisons. Cell-level p-values do not establish embryo-level differential expression.
 

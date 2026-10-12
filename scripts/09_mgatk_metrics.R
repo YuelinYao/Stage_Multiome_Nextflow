@@ -8,7 +8,14 @@ args <- commandArgs(trailingOnly = TRUE)
 # This task computes per-cell metrics; step 13 attaches them to the WNN object.
 stopifnot(length(args) == 4L)
 sample <- args[1]; obj <- readRDS(args[2]); dir <- args[3]; outfile <- args[4]
-m <- ReadMGATK(dir)
+# ReadMGATK would also match macOS "._" metadata files; read via links to the real files only.
+files <- list.files(dir, full.names = TRUE)
+files <- files[!startsWith(basename(files), "._")]
+clean_dir <- file.path(tempdir(), "mgatk")
+dir.create(clean_dir)
+if (length(files))
+  invisible(file.symlink(normalizePath(files), file.path(clean_dir, basename(files))))
+m <- ReadMGATK(clean_dir)
 variants <- data.frame(
   pos = c(1781L, 1866L, 3009L, 3823L, 5019L, 5024L, 13614L, 13715L, 15200L, 16232L),
   ref = c("C", "A", "G", "T", "A", "C", "C", "C", "A", "A"),

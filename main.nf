@@ -32,7 +32,8 @@ def arcDataFiles(arc, boolean summary = false) {
   names.collect { file("${arc}/${it}", checkIfExists: true) }
 }
 def mgatkDataFiles(directory, boolean depthOnly = false) {
-  def names = file(directory).toFile().listFiles()?.findAll { it.isFile() } ?: []
+  // Skip macOS "._" metadata files, which would otherwise match the patterns below.
+  def names = file(directory).toFile().listFiles()?.findAll { it.isFile() && !it.name.startsWith('._') } ?: []
   def patterns = depthOnly ? [/[.]depthTable[.]txt$/] :
     [/[.]A[.]txt[.]gz$/, /[.]C[.]txt[.]gz$/, /[.]G[.]txt[.]gz$/, /[.]T[.]txt[.]gz$/,
      /_refAllele[.]txt(?:[.]gz)?$/, /[.]depthTable[.]txt$/]

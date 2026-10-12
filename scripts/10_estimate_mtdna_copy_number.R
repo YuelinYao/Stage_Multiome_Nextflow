@@ -251,6 +251,7 @@ nuclear_coverage <- function(path, reference, cells, barcode_lookup, mapq, baseq
 read_mgatk_depth <- function(directory, cells, lookup) {
   if (!dir.exists(directory)) fail("Missing mgatk directory: ", directory)
   files <- list.files(directory, pattern = "[.]depthTable[.]txt$", full.names = TRUE)
+  files <- files[!startsWith(basename(files), "._")]  # skip macOS metadata files
   if (length(files) != 1L) fail("Expected exactly one mgatk depthTable.txt in: ", directory)
   depth <- read.table(files, header = FALSE, colClasses = c("character", "numeric"))
   if (ncol(depth) != 2L || anyDuplicated(depth[[1]]) || anyNA(depth) ||
