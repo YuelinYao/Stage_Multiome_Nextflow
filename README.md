@@ -38,7 +38,7 @@ Use these existing environments when running this project:
 | `conda_env` | `/suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome` |
 | `macs3_path` | `/suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3` |
 
-Enable the Conda profile with `-profile conda` for local execution or `-profile slurm,conda` for Slurm. Nextflow uses the R environment above for each task and calls MACS3 through its explicit executable path. Both paths must be accessible on every execution node. [site.config](site.config) contains process CPUs, memory and running times; queue/account settings can be added there when required by your cluster.
+Enable the Conda profile with `-profile conda` for local execution or `-profile slurm,conda` for Slurm. Nextflow uses the R environment above for each task and calls MACS3 through its explicit executable path. Both paths must be accessible on every execution node. [site.config](site.config) is the only place where each process's CPUs, memory and time limit are set (`main.nf` contains none), so always pass it, or your copy of it, with `-c`; without it, tasks get Nextflow's defaults of one CPU and no memory request. Queue/account settings can be added there when required by your cluster.
 
 Package versions for the existing `stage_multiome` Conda environment are recorded in [environment.yml](environment.yml). This is an exported Linux environment, including its dependencies and installation prefix.
 
@@ -162,9 +162,9 @@ Steps 09 and 10 start for each sample as soon as it finishes step 06. RNA and AT
 
 ## Pipeline settings JSON
 
-Supply this file through `-params-file`. It contains both run parameters and analysis sections at the top level. The sections below follow the workflow order; JSON key order itself does not affect execution. See [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) for the complete structure. Its QC thresholds are illustrative and must be reviewed for your samples.
+Supply this file through `-params-file` (see the [Nextflow parameter-file documentation](https://docs.seqera.io/nextflow/reference/cli/run#-params-file)). It contains both run parameters and analysis sections at the top level. The sections below follow the workflow order; JSON key order itself does not affect execution. See [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) for the complete structure. Its QC thresholds are illustrative and must be reviewed for your samples.
 
-Section and parameter names are case-sensitive. Unknown parameters/sections, invalid sample-specific settings and sample IDs absent from the sample sheet are rejected. Use unique JSON keys. Every shared QC metric must have valid bounds; sample overrides replace the bounds for their named metrics.
+Section and parameter names are case-sensitive. Unknown parameters/sections, invalid sample-specific settings and sample IDs absent from the sample sheet are rejected. Use unique JSON keys.
 
 | JSON section | Parameters | Script that uses them |
 | --- | --- | --- |
@@ -180,7 +180,7 @@ Section and parameter names are case-sensitive. Unknown parameters/sections, inv
 | `copy_number` | `bin_size`, `quantile`, `mapq`, `baseq`, `ploidy`, `min_nuclear_bases`, `min_mt_depth`, `keep_duplicates`, `reference_bed`, `blacklist` | `10_estimate_mtdna_copy_number.R` |
 | `WNN` | `RNA_dims`, `ATAC_dims`, `algorithm`, `resolution`, `plot_point_size`, `lineage_assay`, `lineage_markers` | `12_wnn_stage.R` |
 
-Nextflow loads the supplied parameter file into `params`. `main.nf` uses `lib/PipelineSettings.groovy` to separate run parameters from analysis sections and validate complete settings for cluster review and analysis. It passes each task only its relevant settings as `val` inputs and writes a small `process_settings.json` inside that task’s work directory. `scripts/00_common.R` validates these task settings and supplies the shared QC/clustering helpers. RNA and ATAC preprocessing receive the required component count, calculated from their own ranges and the corresponding WNN range. `12_wnn_stage.R` reads `RNA_processing.integrate_rna` and `ATAC_processing.integrate_atac` to select integrated or unintegrated reductions. Each step’s clustering algorithm and resolution come only from its own section.
+Nextflow loads the supplied parameter file into `params`. `main.nf` uses `lib/PipelineSettings.groovy` to separate run parameters from analysis sections and validate complete settings for cluster review and analysis. It passes each task only its relevant settings as `val` inputs and writes a small `process_settings.json` inside that task’s work directory. `scripts/00_common.R` validates these task settings and supplies the shared QC/clustering helpers. `12_wnn_stage.R` reads `RNA_processing.integrate_rna` and `ATAC_processing.integrate_atac` to select integrated or unintegrated reductions.
 
 The `algorithm` key uses Seurat’s clustering algorithm codes in every analysis section:
 
@@ -203,11 +203,11 @@ The configuration defaults to `3`. See [Seurat `FindClusters`](https://satijalab
 "conda_env": "/suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome"
 ```
 
-`stage` selects every sample-sheet row with that label, for example all WT and mutant rows labelled `E8.5`, and excludes other stages; matching is case-sensitive and the workflow stops if no rows match. The selected samples share one common peak set and are merged for stage-level RNA, ATAC and WNN analysis. `macs3_path` must be the absolute MACS3 executable path, and `conda_env` the existing environment path used by the Conda profile. Nextflow loads this JSON with `-params-file`; see the [Nextflow parameter-file documentation](https://docs.seqera.io/nextflow/reference/cli/run#-params-file).
+`stage` selects every sample-sheet row with that label, for example all WT and mutant rows labelled `E8.5`, and excludes other stages; matching is case-sensitive and the workflow stops if no rows match. The selected samples share one common peak set and are merged for stage-level RNA, ATAC and WNN analysis. `macs3_path` must be the absolute MACS3 executable path, and `conda_env` the existing environment path used by the Conda profile.
 
 Select the phase on the command line with `--phase review`, `--phase cluster_review` or `--phase analysis`; the default is `review`. Keep phase selection outside the JSON so you can reuse the same settings file for all three runs; the phase also names that run's execution reports. `outdir` is the output root, best kept outside the pipeline repository; stage results, Nextflow task directories (`work/`) and execution reports (`reports/`) all go under `<outdir>/<stage>/`. Keep `samples`, `stage`, `outdir` and peak limits consistent across phases. Profiles and process resources remain Nextflow configuration options (`-profile` and `-c site.config`).
 
-**1\. `peaks`: common peak widths.** Used from the initial review phase, before QC metrics are calculated. Both width boundaries are excluded. Omitted settings default to 20 and 10,000 bp; keep them consistent across all phases.
+**1\. `peaks`: common peak widths.** Used from the initial review phase, before QC metrics are calculated. Both width boundaries are excluded. Omitted settings default to 20 and 10,000 bp.
 
 ```json
 "peaks": {
@@ -234,7 +234,7 @@ This entry belongs inside `thresholds` and keeps cells with 1,000–40,000 RNA c
 
 With the shared RNA count limits above, `5019_Hi_1` instead keeps cells with 1,200–35,000 RNA counts; its other seven metrics still use `thresholds`. All other samples keep the shared 1,000–40,000 range. To change only one bound, repeat the other bound in the override: `{"min": 1200, "max": 40000}`. Setting an override bound to `null` removes that side’s limit for that sample; it does not inherit the shared bound.
 
-**4\. `review_QC_cluster`: per-sample cluster review in 05.** These settings apply after cell QC, before you choose clusters to remove. `RNA_dims` selects PCs for neighbours and clustering. Algorithm 3 is SLM; `resolution` controls cluster granularity.
+**4\. `review_QC_cluster`: per-sample cluster review in 05.** These settings apply after cell QC, before you choose clusters to remove. `RNA_dims` selects PCs for neighbours and clustering. `resolution` controls cluster granularity.
 
 ```json
 "review_QC_cluster": {
@@ -301,7 +301,7 @@ By default, the expected rate is estimated from ARC’s detected-cell count usin
 }
 ```
 
-With `reference_bed: null`, each sample selects nuclear intervals from its ARC fragments. Set `reference_bed` to an absolute shared BED path to use the same intervals for every sample. `blacklist: null` uses Signac’s bundled mm10 blacklist during reference selection; an absolute BED path overrides it. A supplied reference BED is used as-is and must already exclude blacklist regions. Omitted settings use the defaults above.
+With `reference_bed: null`, each sample selects nuclear intervals from its ARC fragments. Set `reference_bed` to an absolute shared BED path to use the same intervals for every sample. `blacklist: null` uses Signac’s bundled mm10 blacklist during reference selection; an absolute BED path overrides it. A supplied reference BED is used as-is and must already exclude blacklist regions.
 
 **9\. `WNN`: combined RNA/ATAC analysis in 12.** Its own `RNA_dims` and `ATAC_dims` select components for multimodal neighbours; its algorithm and resolution control final `wsnn` clusters. WNN uses integrated reductions when the respective RNA/ATAC integration switch is enabled. RNA and ATAC preprocessing compute enough components for these independent WNN ranges.
 
@@ -646,7 +646,7 @@ Output: `STAGE/deg/cluster_markers.tsv`. These are positive RNA cluster markers;
 
 ## Resuming after JSON edits
 
-With `-resume`, changing one JSON section affects the tasks that use its values. The complete JSON file is not a task input, so whitespace, key order, `note` edits and settings for unrelated samples do not invalidate those tasks. Keep the same work directory and retain `.nextflow/` and task outputs for reuse.
+With `-resume`, changing one JSON section affects the tasks that use its values. The complete JSON file is not a task input, so whitespace, key order, `note` edits and settings for other samples do not invalidate those tasks. Keep the same `outdir` and `stage`, which set the work directory (`<outdir>/<stage>/work`), and launch from the same directory so `.nextflow/` is reused. Editing `cpus`, `memory` or `time` in `site.config` does not rerun completed tasks.
 
 | Edited settings | Tasks whose settings change |
 | --- | --- |
@@ -669,7 +669,7 @@ This refactor changes task commands, so the first run after upgrading can rerun 
 
 ## Workflow files and execution
 
-`main.nf` wires every active script and stages files between tasks. `lib/PipelineSettings.groovy` validates and resolves process-specific settings, including per-sample overrides and component counts. `nextflow.config` supplies local/Conda/Slurm execution settings. `scripts/00_common.R` contains shared import, QC, validation, clustering, scoring and annotation helpers; it is not a standalone process. `examples/` contains the manifest and illustrative JSON.
+`main.nf` wires every active script and stages files between tasks. `lib/PipelineSettings.groovy` validates and resolves process-specific settings, including per-sample overrides and component counts. `nextflow.config` is loaded automatically: it supplies the local/Conda/Slurm execution profiles, defaults for the parameters it uses itself (`outdir`, `conda_env`, `phase`), the per-stage work directory `<outdir>/<stage>/work` and the per-phase execution reports in `<outdir>/<stage>/reports/`. `site.config`, passed with `-c`, sets CPUs, memory and time for each process. `scripts/00_common.R` contains shared import, QC, validation, clustering, scoring and annotation helpers; it is not a standalone process. `examples/` contains the manifest and illustrative JSON.
 
 Validate settings and cache behavior from the project directory:
 

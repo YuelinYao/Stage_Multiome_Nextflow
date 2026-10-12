@@ -73,8 +73,6 @@ def scriptsHash() {
 
 process PEAK_SAMPLE {
   tag "$id"
-  cpus 4
-  memory '24 GB'
   publishDir "${params.outdir}/${params.stage}/peaks/sample", mode: 'copy'
   input:
   val rSourceHash
@@ -89,8 +87,6 @@ process PEAK_SAMPLE {
 }
 
 process COMMON_PEAKS {
-  cpus 2
-  memory '12 GB'
   publishDir "${params.outdir}/${params.stage}/peaks", mode: 'copy'
   input:
   val rSourceHash
@@ -108,8 +104,6 @@ process COMMON_PEAKS {
 
 process QC_METRICS {
   tag "$id"
-  cpus 4
-  memory '48 GB'
   input:
   val rSourceHash
   tuple val(id), val(arc), path(peaks), path(arc_inputs, stageAs: 'arc_inputs/*')
@@ -123,8 +117,6 @@ process QC_METRICS {
 }
 
 process QC_REVIEW {
-  cpus 2
-  memory '12 GB'
   publishDir "${params.outdir}/${params.stage}/qc/review", mode: 'copy'
   input:
   val rSourceHash
@@ -143,8 +135,6 @@ process QC_REVIEW {
 
 process PRE_DOUBLET_REVIEW {
   tag "$id"
-  cpus 4
-  memory '48 GB'
   publishDir "${params.outdir}/${params.stage}/qc/cluster_review", mode: 'copy'
   input:
   val rSourceHash
@@ -164,8 +154,6 @@ process PRE_DOUBLET_REVIEW {
 
 process QC_FILTER_DOUBLET {
   tag "$id"
-  cpus 4
-  memory '48 GB'
   publishDir "${params.outdir}/${params.stage}/qc/filtered", mode: 'copy', pattern: '*.{qc.tsv,pdf}'
   input:
   val rSourceHash
@@ -182,8 +170,6 @@ process QC_FILTER_DOUBLET {
 }
 
 process MERGE_INTEGRATE_RNA {
-  cpus 8
-  memory '96 GB'
   publishDir "${params.outdir}/${params.stage}/objects", mode: 'copy', pattern: 'rna_*'
   input:
   val rSourceHash
@@ -202,8 +188,6 @@ process MERGE_INTEGRATE_RNA {
 }
 
 process MERGE_INTEGRATE_ATAC {
-  cpus 8
-  memory '96 GB'
   publishDir "${params.outdir}/${params.stage}/objects", mode: 'copy', pattern: 'atac_*.rds'
   input:
   val rSourceHash
@@ -222,8 +206,6 @@ process MERGE_INTEGRATE_ATAC {
 
 process MGATK_METRICS {
   tag "$id"
-  cpus 2
-  memory '24 GB'
   publishDir "${params.outdir}/${params.stage}/mgatk", mode: 'copy'
   input:
   val rSourceHash
@@ -240,9 +222,6 @@ process MGATK_METRICS {
 // Step 10 uses step 06 singlets, independently of step 09 metric extraction.
 process MTDNA_COPY_NUMBER {
   tag "$id"
-  cpus 8
-  memory '24 GB'
-  time '48h'
   publishDir "${params.outdir}/${params.stage}/copy_number", mode: 'copy'
   input:
   val rSourceHash
@@ -263,8 +242,6 @@ process MTDNA_COPY_NUMBER {
 }
 
 process WNN_STAGE {
-  cpus 8
-  memory '96 GB'
   publishDir "${params.outdir}/${params.stage}/objects", mode: 'copy', pattern: '*.rds'
   publishDir "${params.outdir}/${params.stage}/plots", mode: 'copy', pattern: '*.pdf'
   input:
@@ -284,8 +261,6 @@ process WNN_STAGE {
 }
 
 process ADD_MGATK {
-  cpus 2
-  memory '64 GB'
   publishDir "${params.outdir}/${params.stage}/objects", mode: 'copy'
   input:
   val rSourceHash
@@ -303,8 +278,6 @@ process ADD_MGATK {
 }
 
 process DEG_STAGE {
-  cpus 4
-  memory '64 GB'
   publishDir "${params.outdir}/${params.stage}/deg", mode: 'copy'
   input:
   val rSourceHash
