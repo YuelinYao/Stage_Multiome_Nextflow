@@ -685,25 +685,25 @@ The cache check uses real Nextflow with temporary synthetic inputs and mock R ou
 
 ### CPU use by step
 
-`cpus` for each process is set in [site.config](site.config). Several steps are single-threaded, so extra CPUs there stay idle and only make Slurm jobs wait longer to start. Steps that run PCA/SVD, integration or UMAP use multithreaded maths libraries (OpenBLAS) and UMAP threads, so they gain modestly from more CPUs.
+`cpus` for each process is set in [site.config](site.config). Several steps are single-threaded, so extra CPUs there stay idle and only make Slurm jobs wait longer to start. Steps that run PCA/SVD or integration use a multithreaded maths library (OpenBLAS), so they gain modestly from more CPUs. Seurat runs UMAP on one thread because the workflow sets no `future` plan.
 
 | Step | Process | `cpus` in site.config | Uses more than one CPU? |
 | --- | --- | --- | --- |
-| 01 | `PEAK_SAMPLE` | 4 | No: MACS3 and R are single-threaded |
-| 02 | `COMMON_PEAKS` | 2 | No |
-| 03 | `QC_METRICS` | 4 | No: Signac counting runs sequentially (no `future` plan is set) |
-| 04 | `QC_REVIEW` | 2 | No |
+| 01 | `PEAK_SAMPLE` | 1 | No: MACS3 and R are single-threaded |
+| 02 | `COMMON_PEAKS` | 1 | No |
+| 03 | `QC_METRICS` | 1 | No: Signac counting runs sequentially (no `future` plan is set) |
+| 04 | `QC_REVIEW` | 1 | No |
 | 05 | `PRE_DOUBLET_REVIEW` | 4 | A little: PCA |
-| 06 | `QC_FILTER_DOUBLET` | 4 | Some: PCA and UMAP; the DoubletFinder pK sweep uses one core |
-| 07 | `MERGE_INTEGRATE_RNA` | 8 | Some: PCA, CCA integration and UMAP |
-| 08 | `MERGE_INTEGRATE_ATAC` | 8 | Some: SVD/LSI and UMAP |
-| 09 | `MGATK_METRICS` | 2 | No |
-| 10 | `MTDNA_COPY_NUMBER` | 8 | No: the BAM scan is single-threaded |
-| 11–12 | `WNN_STAGE` | 8 | A little: UMAP |
-| 13 | `ADD_MGATK` | 2 | No |
-| 14 | `DEG_STAGE` | 4 | No: marker tests run sequentially (no `future` plan is set) |
+| 06 | `QC_FILTER_DOUBLET` | 4 | Some: PCA; UMAP and the DoubletFinder pK sweep use one core |
+| 07 | `MERGE_INTEGRATE_RNA` | 8 | Some: PCA and CCA integration |
+| 08 | `MERGE_INTEGRATE_ATAC` | 8 | Some: SVD/LSI |
+| 09 | `MGATK_METRICS` | 1 | No |
+| 10 | `MTDNA_COPY_NUMBER` | 1 | No: the BAM scan is single-threaded |
+| 11–12 | `WNN_STAGE` | 2 | Little: WNN neighbours and UMAP run on one core |
+| 13 | `ADD_MGATK` | 1 | No |
+| 14 | `DEG_STAGE` | 1 | No: marker tests run sequentially (no `future` plan is set) |
 
-The workflow does not currently limit OpenBLAS or UMAP threads to a task's `cpus`. These libraries detect every core on the node, so a task can start more threads than the CPUs it was allocated. Limiting them, for example by exporting `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `RCPP_PARALLEL_NUM_THREADS` set to `task.cpus` before each task, makes `cpus` control these steps directly.
+[nextflow.config](nextflow.config) sets `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `RCPP_PARALLEL_NUM_THREADS` to each task's `cpus` before it starts, so multithreaded maths uses exactly the CPUs allocated in `site.config` rather than every core on the node.
 
 ### Estimated run time
 
