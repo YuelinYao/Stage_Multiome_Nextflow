@@ -3,6 +3,9 @@ suppressPackageStartupMessages({
   library(Signac)
   library(Matrix)
 })
+# Tasks run sequentially (no future plan), so exported globals are not copied;
+# lift the 2 GiB guard that blocks PrepSCTIntegration on large stage objects.
+options(future.globals.maxSize = Inf)
 stop_bad <- function(...) stop(..., call. = FALSE)
 write_tsv <- function(x, file) write.table(x, file, sep = "\t", quote = FALSE,
                                            row.names = FALSE, na = "NA")
