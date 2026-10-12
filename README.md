@@ -157,11 +157,12 @@ Steps 09 and 10 start for each sample as soon as it finishes step 06. RNA and AT
 
 Supply this file through `-params-file`. It contains both run parameters and analysis sections at the top level. The sections below follow the workflow order; JSON key order itself does not affect execution. See [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) for the complete structure. Its QC thresholds are illustrative and must be reviewed for your samples.
 
-Section and parameter names are case-sensitive. Unknown parameters/sections and invalid sample-specific settings are rejected. Use unique JSON keys. Every shared QC metric must have valid bounds; sample overrides replace the bounds for their named metrics.
+Section and parameter names are case-sensitive. Unknown parameters/sections, invalid sample-specific settings and sample IDs absent from the sample sheet are rejected. Use unique JSON keys. Every shared QC metric must have valid bounds; sample overrides replace the bounds for their named metrics.
 
 | JSON section | Parameters | Script that uses them |
 | --- | --- | --- |
-| Run parameters | `samples`, `stage`, `outdir`, `macs3_path`, `conda_env` | `main.nf`; `nextflow.config` uses the environment and output paths |
+| Run parameters | `samples`, `stage`, `outdir`, `macs3_path`, `conda_env` | `main.nf`; `nextflow.config` uses `conda_env`, and `outdir`/`stage` for the `work/` and `reports/` folders |
+| `note` | Optional free text, for your own record | Not used by the analysis |
 | `peaks` | `peak_min`, `peak_max` | `main.nf` reads the limits and passes them to `02_consensus_peaks.R` |
 | `thresholds` | `min`, `max` for each of the eight QC metrics | `05_review_clusters.R`, `06_qc_doubletfinder.R` |
 | `sample_overrides` | Per-sample `min`, `max` for selected QC metrics | `05_review_clusters.R`, `06_qc_doubletfinder.R` |
@@ -170,7 +171,7 @@ Section and parameter names are case-sensitive. Unknown parameters/sections and 
 | `RNA_processing` | `RNA_dims`, `RNA_umap_dims`, `algorithm`, `resolution`, `integrate_rna` | `07_preprocess_rna.R` |
 | `ATAC_processing` | `ATAC_dims`, `ATAC_integrate_dims`, `algorithm`, `resolution`, `integrate_atac`, `min_cutoff` | `08_preprocess_atac.R` |
 | `copy_number` | `bin_size`, `quantile`, `mapq`, `baseq`, `ploidy`, `min_nuclear_bases`, `min_mt_depth`, `keep_duplicates`, `reference_bed`, `blacklist` | `10_estimate_mtdna_copy_number.R` |
-| `WNN` | `RNA_dims`, `ATAC_dims`, `algorithm`, `resolution` | `12_wnn_stage.R` |
+| `WNN` | `RNA_dims`, `ATAC_dims`, `algorithm`, `resolution`, `plot_point_size`, `lineage_assay`, `lineage_markers` | `12_wnn_stage.R` |
 
 Nextflow loads the supplied parameter file into `params`. `main.nf` uses `lib/PipelineSettings.groovy` to separate run parameters from analysis sections and validate complete settings for cluster review and analysis. It passes each task only its relevant settings as `val` inputs and writes a small `process_settings.json` inside that task’s work directory. `scripts/00_common.R` validates these task settings and supplies the shared QC/clustering helpers. RNA and ATAC preprocessing receive the required component count, calculated from their own ranges and the corresponding WNN range. `12_wnn_stage.R` reads `RNA_processing.integrate_rna` and `ATAC_processing.integrate_atac` to select integrated or unintegrated reductions. Each step’s clustering algorithm and resolution come only from its own section.
 
@@ -190,14 +191,14 @@ The configuration defaults to `3`. See [Seurat `FindClusters`](https://satijalab
 ```json
 "samples": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/samples.csv",
 "stage": "E8.5",
-"outdir": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/stage_results",
+"outdir": "/suffolk/WorkGenomicsD/yy605/stage_results",
 "macs3_path": "/suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3",
 "conda_env": "/suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome"
 ```
 
 `stage` selects every sample-sheet row with that label, for example all WT and mutant rows labelled `E8.5`, and excludes other stages; matching is case-sensitive and the workflow stops if no rows match. The selected samples share one common peak set and are merged for stage-level RNA, ATAC and WNN analysis. `macs3_path` must be the absolute MACS3 executable path, and `conda_env` the existing environment path used by the Conda profile. Nextflow loads this JSON with `-params-file`; see the [Nextflow parameter-file documentation](https://docs.seqera.io/nextflow/reference/cli/run#-params-file).
 
-Select the phase on the command line with `--phase review`, `--phase cluster_review` or `--phase analysis`; the default is `review`. Keep phase selection outside the JSON so you can reuse the same settings file for all three runs. `outdir` is the output root; stage results go under `<outdir>/<stage>/`. Keep `samples`, `stage`, `outdir` and peak limits consistent across phases. Profiles and process resources remain Nextflow configuration options (`-profile` and `-c site.config`).
+Select the phase on the command line with `--phase review`, `--phase cluster_review` or `--phase analysis`; the default is `review`. Keep phase selection outside the JSON so you can reuse the same settings file for all three runs; the phase also names that run's execution reports. `outdir` is the output root, best kept outside the pipeline repository; stage results, Nextflow task directories (`work/`) and execution reports (`reports/`) all go under `<outdir>/<stage>/`. Keep `samples`, `stage`, `outdir` and peak limits consistent across phases. Profiles and process resources remain Nextflow configuration options (`-profile` and `-c site.config`).
 
 **1\. `peaks`: common peak widths.** Used from the initial review phase, before QC metrics are calculated. Both width boundaries are excluded. Omitted settings default to 20 and 10,000 bp; keep them consistent across all phases.
 
@@ -247,7 +248,7 @@ With the shared RNA count limits above, `5019_Hi_1` instead keeps cells with 1,2
 }
 ```
 
-By default, the expected rate is estimated from ARC’s detected-cell count using `nextgem_multiome_doublet_rate()`. The expected doublet count is adjusted for homotypic doublets. Numeric `expected_rate` and `sample_rates` remain optional overrides; omit both to use ARC-based estimation. See Step 06 for the Next GEM Multiome assumption and supported count range.
+By default, the expected rate is estimated from ARC’s detected-cell count using `nextgem_multiome_doublet_rate()`. The expected doublet count is adjusted for homotypic doublets. `expected_rate` (default `"auto"`) and `sample_rates` (default `{}`) are optional overrides: a number between 0 and 1 replaces the ARC-based estimate for all samples or for the samples named in `sample_rates`, for example `"sample_rates": {"5019_Hi_1": 0.05}`. Omit both to use ARC-based estimation. See Step 06 for the Next GEM Multiome assumption and supported count range.
 
 **6\. `RNA_processing`: RNA analysis in 07.** `RNA_dims` controls per-sample and stage RNA neighbours/clustering and CCA anchors. `RNA_umap_dims` controls both stage RNA UMAPs. These clusters use this section’s algorithm and resolution. `integrate_rna` enables CCA integration between samples; it requires at least two samples. Set it to `false` for a single-sample stage.
 
@@ -276,7 +277,7 @@ By default, the expected rate is estimated from ARC’s detected-cell count usin
 }
 ```
 
-**8\. `copy_number`: per-sample mtDNA copy-number estimation in 10.** `bin_size` and `quantile` control nuclear reference selection; `mapq`, `baseq` and `keep_duplicates` control BAM counting. `ploidy` supplies the nuclear copy-number assumption. `min_nuclear_bases` and `min_mt_depth` flag low coverage. These defaults are starting settings; match the counting filters to your mgatk runs.
+**8\. `copy_number`: per-sample mtDNA copy-number estimation in 10.** `bin_size` and `quantile` control nuclear reference selection; `mapq`, `baseq` and `keep_duplicates` control BAM counting. `ploidy` supplies the nuclear copy-number assumption. `min_nuclear_bases` and `min_mt_depth` flag low coverage: a cell with fewer nuclear bases, or with mean mtDNA depth below `min_mt_depth`, receives a non-`pass` `qc_status` and an `NA` normalised estimate, while its `_raw` estimate is kept. `mapq` and `baseq` filter only the nuclear reads counted from the ARC BAM; mitochondrial depth comes from mgatk's depth table, filtered by mgatk's own `-aq`/`-q` settings (both 0 by default). Stricter nuclear filters scale all estimates by a similar factor, so values remain comparable as relative estimates; check this holds across sequencing batches before comparing them.
 
 ```json
 "copy_number": {
