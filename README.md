@@ -183,7 +183,7 @@ Select the phase on the command line with `--phase review`, `--phase cluster_rev
 
 This entry belongs inside `thresholds` and keeps cells with 1,000–40,000 RNA counts, including both endpoints. Shared limits apply to every sample unless overridden below. Use `min` to require a minimum value and `max` to reject values above an upper limit; for example, `"percent.mt": {"min": null, "max": 10}` keeps cells with at most 10% mitochondrial RNA. Include both keys even when one is `null`; they cannot both be `null`. The complete example lists all eight required metrics.
 
-**3\. `sample_overrides`: optional sample-specific QC limits.** For each listed metric, both sample-specific bounds replace the shared bounds. Unlisted metrics retain their shared limits. Overrides may be stricter or more permissive; choose them from the sample’s QC distributions. Keys must match CSV `sample_id` values. Leave this section as `{}` for shared thresholds only.
+**3\. `sample_overrides`: optional sample-specific QC limits.** For each listed metric, both sample-specific bounds replace the shared bounds. Unlisted metrics retain their shared limits. Overrides may be stricter or more permissive; choose them from the sample’s QC distributions. Keys must match CSV `sample_id` values for the selected stage; cluster review and analysis stop with an error if a key in `sample_overrides`, `doublet.sample_rates` or `doublet.exclude_clusters` does not match, so misspelled IDs are never silently ignored. Leave this section as `{}` for shared thresholds only.
 
 ```json
 "sample_overrides": {

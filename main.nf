@@ -347,6 +347,16 @@ workflow {
   def wnnSettings = params.phase == 'analysis' ? PipelineSettings.wnn(scopedSettings) : [:]
   def copyNumberSettings = params.phase == 'analysis' ? PipelineSettings.copyNumber(scopedSettings) : [:]
 
+  // Stop on misspelled sample IDs, which would otherwise be silently ignored.
+  if (params.phase != 'review') {
+    def stageIds = file(params.samples).splitCsv(header: true)
+      .findAll { it.stage?.trim() == params.stage }.collect { it.sample_id?.trim() }
+    def jsonIds = scopedSettings.sample_overrides.keySet() +
+      scopedSettings.doublet.sample_rates.keySet() + scopedSettings.doublet.exclude_clusters.keySet()
+    def unknown = jsonIds.findAll { !(it in stageIds) }.unique()
+    if (unknown) error "Sample IDs in pipeline JSON not found for stage ${params.stage}: ${unknown.join(', ')}"
+  }
+
   seenIds = new HashSet()
   // Preserve both mitochondrial sources; step 09 uses enriched, step 10 uses both.
   sample_records = Channel.fromPath(params.samples, checkIfExists: true)
