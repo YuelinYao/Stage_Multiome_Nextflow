@@ -1,7 +1,7 @@
 {
-  "samples": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/samples.csv",
+  "samples": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/samples_test.csv",
   "stage": "E8.5",
-  "outdir": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/stage_results",
+  "outdir": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/stage_results_test",
   "macs3_path": "/suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3",
   "conda_env": "/suffolk/WorkGenomicsD/yy605/conda_env/stage_multiome",
   "peaks": {

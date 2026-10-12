@@ -1,3 +1,4 @@
 .DS_Store
 .nextflow*
 /work
+/stage_results_test
