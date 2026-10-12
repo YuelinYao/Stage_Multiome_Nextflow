@@ -110,7 +110,12 @@ flowchart TD
   EXCLUSIONS --> QC
 ```
 
-**Before you start:** copy [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) to your own file and edit its paths and settings; use that same file for all three phases. Editing the example inside the repository would conflict with `git pull`. The commands below use the example path; replace it with your copy.
+**Before you start:** copy two files from the repository to your own location and edit the copies: [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) (paths and analysis settings) and [site.config](site.config) (CPUs, memory, time limits and any Slurm queue/account). Use the same two files for all three phases. Editing them inside the repository would conflict with `git pull`. The commands below use the repository paths; replace `-params-file` and `-c` with your copies.
+
+```bash
+cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/pipeline_settings.example.json /path/to/my_pipeline_settings.json
+cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/site.config /path/to/my_site.config
+```
 
 **Where to launch:** `-resume` continues the most recent run recorded in the launch directory's `.nextflow/` folder, so start every phase of a stage from the same directory. When processing several stages side by side, launch each stage from its own directory, using absolute paths for `main.nf`, `site.config` and the JSON.
 
@@ -142,7 +147,9 @@ Then inspect `<outdir>/<stage>/qc/cluster_review/`: per-cell cluster assignments
 
 ### Phase 3: analysis
 
-Run `--phase analysis` with your reviewed settings. Keep the QC thresholds and `review_QC_cluster` settings used for cluster review: analysis reads each sample's saved `<sample>.cluster_cells.tsv` and uses those exact cluster labels.
+Run `--phase analysis` once you have added the low-quality cluster IDs to `doublet.exclude_clusters`.
+
+Do not change the QC `thresholds`, `sample_overrides` or `review_QC_cluster` settings between cluster review and analysis. The cluster IDs you chose (for example cluster `3`) are the labels saved in phase 2 in each `<outdir>/<stage>/qc/cluster_review/<sample>.cluster_cells.tsv`. Analysis does not recluster: step 06 reapplies the QC thresholds, then removes your excluded clusters using those saved labels. It first checks that the cells passing QC are exactly the cells in the saved table; if you changed the thresholds, the cells differ and the run stops with an error. If you need different QC settings, rerun `--phase cluster_review`, inspect the new clusters (their IDs may change), update `doublet.exclude_clusters`, then run analysis.
 
 ```bash
 NXF_VER=25.10.8 nextflow run /nfs4/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
@@ -673,3 +680,43 @@ python3 tests/script_hash.py --nextflow /path/to/nextflow
 ```
 
 The cache check uses real Nextflow with temporary synthetic inputs and mock R outputs; it requires Java 17+ and Python 3. When R is available, it also validates the generated settings with the R reader (`jsonlite` required). It checks which tasks rerun after settings edits, without validating biological calculations. Existing R checks in `tests/` exercise consensus peak unions/width boundaries, QC, DoubletFinder routing, RNA/ATAC integration, WNN, legacy modality combination, adjusted-p-value marker filtering, mgatk metadata and copy-number calculations with synthetic data and documented dependency substitutions.
+
+## Run time and CPU use
+
+### CPU use by step
+
+`cpus` for each process is set in [site.config](site.config). Several steps are single-threaded, so extra CPUs there stay idle and only make Slurm jobs wait longer to start. Steps that run PCA/SVD, integration or UMAP use multithreaded maths libraries (OpenBLAS) and UMAP threads, so they gain modestly from more CPUs.
+
+| Step | Process | `cpus` in site.config | Uses more than one CPU? |
+| --- | --- | --- | --- |
+| 01 | `PEAK_SAMPLE` | 4 | No: MACS3 and R are single-threaded |
+| 02 | `COMMON_PEAKS` | 2 | No |
+| 03 | `QC_METRICS` | 4 | No: Signac counting runs sequentially (no `future` plan is set) |
+| 04 | `QC_REVIEW` | 2 | No |
+| 05 | `PRE_DOUBLET_REVIEW` | 4 | A little: PCA |
+| 06 | `QC_FILTER_DOUBLET` | 4 | Some: PCA and UMAP; the DoubletFinder pK sweep uses one core |
+| 07 | `MERGE_INTEGRATE_RNA` | 8 | Some: PCA, CCA integration and UMAP |
+| 08 | `MERGE_INTEGRATE_ATAC` | 8 | Some: SVD/LSI and UMAP |
+| 09 | `MGATK_METRICS` | 2 | No |
+| 10 | `MTDNA_COPY_NUMBER` | 8 | No: the BAM scan is single-threaded |
+| 11–12 | `WNN_STAGE` | 8 | A little: UMAP |
+| 13 | `ADD_MGATK` | 2 | No |
+| 14 | `DEG_STAGE` | 4 | No: marker tests run sequentially (no `future` plan is set) |
+
+The workflow does not currently limit OpenBLAS or UMAP threads to a task's `cpus`. These libraries detect every core on the node, so a task can start more threads than the CPUs it was allocated. Limiting them, for example by exporting `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `RCPP_PARALLEL_NUM_THREADS` set to `task.cpus` before each task, makes `cpus` control these steps directly.
+
+### Estimated run time
+
+Run time depends mainly on library size. Per-sample steps run as separate Slurm jobs in parallel, so with enough cluster capacity a stage takes about as long as its slowest sample.
+
+Step 10 (mtDNA copy number) is usually the longest per-sample step: it reads the whole ATAC BAM once on one CPU. Example timings, measured on chunks of the largest E8.5 sample (`E8_5_Hi_1`, 79 GB BAM, 1.66 billion mapped alignments, 382 million fragments):
+
+| Step 10 stage | Measured speed | Estimated time for this sample |
+| --- | --- | --- |
+| Select accessible nuclear regions from fragments | 0.39 s per 100,000 fragments | ~25 min |
+| Count nuclear bases in the BAM | 0.95 s per 100,000 filtered alignments | ~1.5–3 h |
+| **Total** | | **~2–3.5 h** |
+
+Smaller libraries scale roughly with BAM size; the 007 E8.5 BAMs (21–47 GB) take about 1–2 h each. Reading from shared storage can be slower. Step 10 starts as soon as its sample finishes step 06 and runs alongside steps 07–09. The time limits in [site.config](site.config) are generous starting values, not measured run times.
+
+For actual times of every task, open `<outdir>/<stage>/reports/execution_report_<phase>.html`, or read the `realtime`, `peak_rss` and `%cpu` columns of `reports/execution_trace_<phase>.txt`. Use these to tune `time`, `memory` and `cpus` in `site.config` for later stages.
