@@ -7,6 +7,25 @@ suppressPackageStartupMessages({
 # lift the 2 GiB guard that blocks PrepSCTIntegration on large stage objects.
 options(future.globals.maxSize = Inf)
 stop_bad <- function(...) stop(..., call. = FALSE)
+# User-supplied categorical colours, in their original order (including repeats).
+plot_palette <- c(
+  "#000000", "#808080", "#ff4500", "#8b0000", "#a0522d", "#daa520", "#ffd700", "#228b22", "#98fb98", "#87ceeb",
+  "#4169e1", "#ffb6c1", "#deb887", "#bc8f8f", "#ba55d3", "#483d8b", "#66cdaa", "#008080", "#00ff7f", "#a0522d",
+  "#bc8f8f", "#fa8072", "#ff8c00", "#e3cc32", "#32cd32", "#ba55d3", "#adff2f", "#6495ed", "#808000", "#008b8b",
+  "#7fffd4", "#4169e1", "#dc143c", "#8a2be2", "#00ff7f", "#b0e0e6", "#483d8b", "#5f9ea0", "#4682b4", "#90ee90",
+  "#778899", "#66cdaa", "#ee82ee", "#48d1cc", "#db7093", "#6a5acd", "#dc143c", "#9acd32", "#daa520", "#20b2aa",
+  "#db7093", "#1e90ff", "#ffc0cb", "#3cb371", "#4b0082", "#f0fff0", "#c0c0c0", "#7fffd4", "#ffa07a", "#40e0d0",
+  "#d2b48c", "#b22222", "#ff7f50", "#98fb98", "#fff0f5", "#000000", "#9400d3", "#e9967a", "#ffebcd", "#8a2be2",
+  "#ffd700", "#dda0dd", "#0000ff", "#6a5acd", "#008000", "#f5deb3", "#ff4500", "#8b4513", "#ffd700", "#00fa9a",
+  "#191970", "#9370db", "#808080", "#9400d3", "#ff00ff", "#90ee90", "#b0c4de", "#663399", "#bdb76b", "#708090",
+  "#4169e1", "#00ffff", "#a9a9a9", "#008b8b", "#ff0000", "#adff2f", "#2f4f4f", "#556b2f", "#d3d3d3", "#66cdaa"
+)
+plot_group_colors <- function(groups) {
+  groups <- unique(as.character(groups))
+  # Naming colours keeps assignments stable when a QC panel omits missing data.
+  # Repeat the supplied palette if a plot contains more groups than colours.
+  stats::setNames(rep_len(plot_palette, length(groups)), groups)
+}
 write_tsv <- function(x, file) write.table(x, file, sep = "\t", quote = FALSE,
                                            row.names = FALSE, na = "NA")
 filter_significant_markers <- function(markers) {
@@ -78,6 +97,7 @@ plot_qc_violins <- function(tab, file, title) {
   if (!requireNamespace("ggpubr", quietly = TRUE))
     stop_bad("Install ggpubr to generate QC violin plots")
   ids <- unique(tab$sample_id)
+  colors <- plot_group_colors(ids)
   grDevices::pdf(file, width = max(16, length(ids) * 0.8 * 4), height = 10)
   on.exit(grDevices::dev.off(), add = TRUE)
   plots <- lapply(qc_metric_names, function(metric) {
@@ -86,7 +106,7 @@ plot_qc_violins <- function(tab, file, title) {
     data <- data[is.finite(data$value), , drop = FALSE]
     if (!nrow(data)) stop_bad("No finite values for ", metric)
     p <- ggpubr::ggviolin(data, x = "sample_id", y = "value",
-      fill = "sample_id", palette = "jco", trim = TRUE,
+      fill = "sample_id", palette = colors, trim = TRUE,
       add = "boxplot", add.params = list(width = 0.12, fill = "white")) +
       ggplot2::labs(title = paste(title, metric, sep = ": "),
                     x = NULL, y = metric) +
@@ -113,7 +133,9 @@ pipeline_analysis_defaults <- function() list(
   ATAC_processing = list(ATAC_dims = "2:40", ATAC_integrate_dims = "1:40",
                          algorithm = 3L, resolution = 2, integrate_atac = TRUE,
                          min_cutoff = "q5"),
-  WNN = list(RNA_dims = "1:20", ATAC_dims = "2:40", algorithm = 3L, resolution = 2))
+  WNN = list(RNA_dims = "1:20", ATAC_dims = "2:40", algorithm = 3L, resolution = 2,
+             plot_point_size = 0.1, lineage_assay = "SCT",
+             lineage_markers = c("Pou3f1", "Foxa1", "Pdgfra")))
 read_pipeline_config <- function(file, sample = NULL, process = NULL) {
   cfg <- jsonlite::fromJSON(file, simplifyVector = FALSE)
   named_object <- function(value, name) {
@@ -123,6 +145,12 @@ read_pipeline_config <- function(file, sample = NULL, process = NULL) {
       stop_bad(name, " must be an object with unique, nonempty keys")
   }
   named_object(cfg, "Pipeline JSON")
+  # Direct R invocations may use the same combined -params-file JSON. These
+  # launch parameters are consumed by Nextflow, not by the analysis helpers.
+  if (is.null(cfg$process)) {
+    run_keys <- c("samples", "stage", "outdir", "macs3_path", "conda_env", "enable_conda", "phase")
+    cfg[intersect(names(cfg), run_keys)] <- NULL
+  }
   component_count <- NULL
   # Nextflow writes a small JSON from this task's val inputs. Direct R runs may
   # still supply the complete pipeline JSON and retain full validation below.
@@ -275,6 +303,16 @@ read_pipeline_config <- function(file, sample = NULL, process = NULL) {
         (is.null(names(supplied)) || anyDuplicated(names(supplied)))) ||
         !all(names(supplied) %in% c(names(defaults[[name]]), extra)))
       stop_bad("Invalid settings in ", name)
+    # JSON arrays become unnamed lists with simplifyVector=FALSE. Validate
+    # elements before unlist(), which otherwise turns mixed numbers/strings
+    # into plausible-looking gene symbols such as "42".
+    if (name == "WNN" && "lineage_markers" %in% names(supplied)) {
+      markers <- supplied$lineage_markers
+      if (!is.list(markers) || !is.null(names(markers)) || !length(markers) ||
+          !all(vapply(markers, function(x) is.character(x) && length(x) == 1L &&
+            !is.na(x) && nzchar(trimws(x)), logical(1))))
+        stop_bad("WNN.lineage_markers must be an array of nonempty gene symbols")
+    }
     result <- defaults[[name]]
     for (key in names(supplied)) result[key] <- supplied[key]
     if (length(result$algorithm) != 1L || !is.numeric(result$algorithm) ||
@@ -308,6 +346,17 @@ read_pipeline_config <- function(file, sample = NULL, process = NULL) {
   cfg$thresholds <- limits
   for (name in c("review_QC_cluster", "RNA_processing", "ATAC_processing", "WNN"))
     cfg[[name]] <- parse_section(name)
+  if (length(cfg$WNN$plot_point_size) != 1L || !is.numeric(cfg$WNN$plot_point_size) ||
+      !is.finite(cfg$WNN$plot_point_size) || cfg$WNN$plot_point_size <= 0)
+    stop_bad("WNN.plot_point_size must be positive")
+  if (length(cfg$WNN$lineage_assay) != 1L || !is.character(cfg$WNN$lineage_assay) ||
+      is.na(cfg$WNN$lineage_assay) || !nzchar(trimws(cfg$WNN$lineage_assay)))
+    stop_bad("WNN.lineage_assay must be a nonempty assay name")
+  markers <- unlist(cfg$WNN$lineage_markers, use.names = FALSE)
+  if (!is.character(markers) || !length(markers) ||
+      anyNA(markers) || any(!nzchar(trimws(markers))) || anyDuplicated(markers))
+    stop_bad("WNN.lineage_markers must contain unique nonempty gene symbols")
+  cfg$WNN$lineage_markers <- markers
   # IntegrateEmbeddings renumbers output columns sequentially; including LSI1
   # preserves the meaning of the original LSI indices used downstream.
   if (cfg$ATAC_processing$integrate_atac &&
@@ -380,7 +429,9 @@ nextgem_multiome_doublet_rate <- function(detected_cells) {
   approx(recovered, rates, xout = detected_cells)$y
 }
 preprocess_qc_rna <- function(obj, settings, default_pca = FALSE) {
-  set.seed(123)
+  # Use the same explicit seed for review and post-exclusion RNA preprocessing.
+  seed <- 123L
+  set.seed(seed)
   DefaultAssay(obj) <- "RNA"
   obj <- NormalizeData(obj, verbose = FALSE)
   obj <- FindVariableFeatures(obj, nfeatures = 2000, verbose = FALSE)
@@ -388,13 +439,13 @@ preprocess_qc_rna <- function(obj, settings, default_pca = FALSE) {
   pcs <- if (default_pca) 50L else max(settings$RNA_dims)
   if (min(ncol(obj), length(VariableFeatures(obj))) <= pcs)
     stop_bad("Insufficient cells/features for requested per-sample RNA PCA")
-  obj <- if (default_pca) RunPCA(obj, verbose = FALSE) else
-    RunPCA(obj, npcs = pcs, verbose = FALSE)
+  obj <- if (default_pca) RunPCA(obj, seed.use = seed, verbose = FALSE) else
+    RunPCA(obj, npcs = pcs, seed.use = seed, verbose = FALSE)
   if (ncol(Embeddings(obj, "pca")) < max(settings$RNA_dims))
     stop_bad("Insufficient computed PCs for requested per-sample RNA dimensions")
   obj <- FindNeighbors(obj, dims = settings$RNA_dims, verbose = FALSE)
   FindClusters(obj, resolution = settings$resolution, algorithm = settings$algorithm,
-    cluster.name = "pre_doublet_clusters", verbose = FALSE)
+    cluster.name = "pre_doublet_clusters", random.seed = seed, verbose = FALSE)
 }
 # Load the exact cluster labels inspected in phase cluster_review. Match by
 # barcode, never row position, and reject missing/extra cells or stale metrics.
@@ -423,9 +474,14 @@ read_reviewed_qc_clusters <- function(file, sample, tab, keep) {
   setNames(review$pre_doublet_cluster, review$barcode)
 }
 remove_qc_clusters <- function(obj, excluded) {
-  unknown <- setdiff(excluded, as.character(unique(obj$pre_doublet_clusters)))
-  if (length(unknown)) stop_bad("Unknown pre-doublet cluster IDs: ", paste(unknown, collapse = ", "))
-  cells <- colnames(obj)[!as.character(obj$pre_doublet_clusters) %in% excluded]
+  # Exclusions always refer to saved step 05 labels, independently of any
+  # later clustering computed for DoubletFinder's homotypic correction.
+  if (!("reviewed_qc_cluster" %in% colnames(obj[[]])))
+    stop_bad("Missing reviewed_qc_cluster metadata for cluster exclusion")
+  labels <- as.character(obj$reviewed_qc_cluster)
+  unknown <- setdiff(excluded, unique(labels))
+  if (length(unknown)) stop_bad("Unknown reviewed QC cluster IDs: ", paste(unknown, collapse = ", "))
+  cells <- colnames(obj)[!labels %in% excluded]
   if (length(cells) < 100L) stop_bad("Fewer than 100 cells after cluster exclusion")
   subset(obj, cells = cells)
 }

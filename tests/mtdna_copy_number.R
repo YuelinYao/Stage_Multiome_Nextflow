@@ -31,6 +31,7 @@ run_tests <- function() {
     alignment("secondary", 256, 1, "10M", "AAAAAAAAAA", "IIIIIIIIII", "ATAC1"),
     alignment("lowmapq", 0, 1, "10M", "AAAAAAAAAA", "IIIIIIIIII", "ATAC1", 10),
     alignment("lowbaseq", 0, 1, "10M", "AAAAAAAAAA", "!!!!!!!!!!", "ATAC1"),
+    alignment("missingbaseq", 0, 1, "10M", "AAAAAAAAAA", "*", "ATAC1"),
     alignment("missingmt", 0, 1, "10M", "AAAAAAAAAA", "IIIIIIIIII", "CELL2")), sam)
   bam <- Rsamtools::asBam(sam, destination = file.path(root, "nuclear"), overwrite = TRUE)
   bed <- file.path(root, "reference.bed")
@@ -92,9 +93,9 @@ run_tests <- function() {
   stopifnot(enriched_only$mtDNA_CN_normalised_enriched[1] == 80,
     all(is.na(enriched_only$mtDNA_CN_normalised)),
     all(enriched_only$qc_status == "missing_mgatk_source"))
-  # Workflow route: barcodes come from step 09, while numerical settings and
+  # Workflow route: barcodes come from step 06, while numerical settings and
   # the reusable reference come from the pipeline JSON. Counting remains real.
-  metric_file <- file.path(root, 'sample.mtDNA.tsv')
+  metric_file <- file.path(root, 'sample.singlet_barcodes.tsv')
   write.table(data.frame(sample_id = 'test', barcode = c('CELL1', 'CELL2', 'CELL3')),
     metric_file, sep = "\t", quote = FALSE, row.names = FALSE)
   json_file <- file.path(root, 'settings.json')
@@ -143,6 +144,21 @@ run_tests <- function() {
     GenomicRanges::GRanges("chr1", IRanges::IRanges(501, 1000)), 500, 0.5)
   stopifnot(length(selected) == 1, IRanges::start(selected) == 1,
             IRanges::end(selected) == 500)
+  # Integer bin offsets must not map chr1's excluded trailing partial bin
+  # into chr2's first full bin. Include both chromosome and bin boundaries.
+  boundary_fragments <- file.path(root, 'boundary_fragments.tsv.gz')
+  con <- gzfile(boundary_fragments, 'wt')
+  writeLines(c('chr1\t0\t500\tCELL1\t1',
+               'chr1\t1000\t1100\tCELL1\t1',
+               'chr2\t500\t1000\tCELL1\t1',
+               'chr3\t0\t100\tCELL1\t1'), con)
+  close(con)
+  boundary_reference <- select_reference(boundary_fragments, 'CELL1',
+    c(chr1 = 1250, chr2 = 1000, chr3 = 100), GenomicRanges::GRanges(), 500, 0.5)
+  stopifnot(identical(as.character(GenomicRanges::seqnames(boundary_reference)),
+                     c('chr1', 'chr2')),
+            identical(IRanges::start(boundary_reference), c(1L, 501L)),
+            identical(IRanges::end(boundary_reference), c(500L, 1000L)))
   # Full automatic-reference route with ATAC aliases in fragments as well as
   # BAM and mgatk. Before the fix, canonical CELL1 never matched these fragments.
   con <- gzfile(fragments, "wt")

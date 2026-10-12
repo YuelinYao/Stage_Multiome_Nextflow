@@ -3,16 +3,16 @@ source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(), val
 args <- commandArgs(trailingOnly = TRUE)
 
 # Usage: sample_id retained_rna.rds mgatk_enriched_final_dir sample.mtDNA.tsv
-# The 5019-associated variant panel follows YY_06_mgatk_heteroplasmy.R.
+# The 5019 and 5024 variant panels follow YY_06_mgatk_heteroplasmy.R.
 # Heteroplasmy_<position> and Depth_<position> use its metadata column names.
 # This task computes per-cell metrics; step 13 attaches them to the WNN object.
 stopifnot(length(args) == 4L)
 sample <- args[1]; obj <- readRDS(args[2]); dir <- args[3]; outfile <- args[4]
 m <- ReadMGATK(dir)
 variants <- data.frame(
-  pos = c(5019L, 15200L, 16232L),
-  ref = c("A", "A", "A"),
-  alt = c("G", "G", "T"))
+  pos = c(1781L, 1866L, 3009L, 3823L, 5019L, 5024L, 13614L, 13715L, 15200L, 16232L),
+  ref = c("C", "A", "G", "T", "A", "C", "C", "C", "A", "A"),
+  alt = c("T", "G", "T", "C", "G", "T", "T", "T", "G", "T"))
 # A different reference changes the biological meaning of these allele fractions.
 # Check every site, rather than checking only 5019 and silently using the others.
 for (i in seq_len(nrow(variants))) {
@@ -95,8 +95,17 @@ for (i in seq_len(nrow(variants))) {
 # more weight. This assumes the supplied sites tag the same haplotype; these
 # short-read summaries do not establish linkage or phase. Other-base reads
 # contribute to total depth but not to the two-allele fraction or its cutoff.
-add_pool <- function(label, positions) {
+add_pool <- function(label, positions, reciprocal = integer()) {
+  # Reciprocal sites exchange reference/alternate roles only in this pool.
+  # Individual-site columns always retain the reference-genome orientation.
+  stopifnot(all(reciprocal %in% positions))
   selected <- sites[as.character(positions)]
+  for (pos in reciprocal) {
+    key <- as.character(pos)
+    original <- selected[[key]]
+    selected[[key]]$ref <- original$alt
+    selected[[key]]$alt <- original$ref
+  }
   ref <- Reduce(`+`, lapply(selected, `[[`, "ref"))
   alt <- Reduce(`+`, lapply(selected, `[[`, "alt"))
   out[[paste0("Depth_", label)]] <<- Reduce(`+`, lapply(selected, `[[`, "depth"))
@@ -109,4 +118,12 @@ add_pool <- function(label, positions) {
   out[[paste0("Heteroplasmy_", label, "_covered")]] <<- allele_fraction(alt, ref, 25)
 }
 add_pool("all_5019", c(5019L, 15200L, 16232L))
+# Apply the same 5024 haplotype model to every sample (including 5019 and WT).
+# 5024 and 13715 alternative alleles tag the 5024-mutant mitochondria.
+# At the other five sites, alternative alleles tag mitochondria with WT 5024;
+# reverse those sites so their reference counts contribute to the mutant pool.
+# Do not branch on sample names or force WT/5019 measurements to zero.
+positions_5024 <- c(1781L, 3009L, 5024L, 13614L, 13715L, 3823L, 1866L)
+add_pool("all_5024", positions_5024,
+         reciprocal = c(1781L, 3009L, 13614L, 3823L, 1866L))
 write_tsv(out, outfile)

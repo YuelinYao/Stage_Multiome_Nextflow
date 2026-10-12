@@ -19,7 +19,8 @@ run_checks <- function() {
   obj <- CreateSeuratObject(matrix(1, 3, 120,
     dimnames=list(c('gene1','gene2','gene3'), cells)))
   obj$reviewed_qc_cluster <- unname(labels[colnames(obj)])
-  obj$pre_doublet_clusters <- obj$reviewed_qc_cluster
+  # A different, unrelated clustering must never determine reviewed exclusions.
+  obj$pre_doublet_clusters <- 'other_cluster'
   filtered <- env$remove_qc_clusters(obj, '7')
   stopifnot(ncol(filtered)==100, identical(colnames(filtered), cells[1:100]),
             all(filtered$reviewed_qc_cluster=='0'))

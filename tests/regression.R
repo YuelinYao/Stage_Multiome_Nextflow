@@ -124,7 +124,7 @@ class(obj) <- c("mock_cells", class(obj))
 `$.mock_cells` <- function(x, name) c("present", "missing")
 saveRDS(obj, obj_file)
 env$ReadMGATK <- function(dir) {
-  positions <- c(5019, 15200, 16232)
+  positions <- c(1781, 1866, 3009, 3823, 5019, 5024, 13614, 13715, 15200, 16232)
   rows <- unlist(lapply(positions, function(pos)
     paste(rep(c("A", "G", "C", "T"), each = 2), pos,
           rep(c("fwd", "rev"), 4), sep = "-")))
@@ -133,7 +133,7 @@ env$ReadMGATK <- function(dir) {
   counts[paste(rep(c("A", "G"), each = 2), 5019,
                rep(c("fwd", "rev"), 2), sep = "-"), 1] <- c(3, 3, 2, 2)
   list(refallele = data.frame(pos = positions,
-    ref = c("A", "A", "A")),
+    ref = c("C", "A", "G", "T", "A", "C", "C", "C", "A", "A")),
     counts = counts, depth = data.frame(depth = 100, row.names = "present"))
 }
 env$args <- c("sample", obj_file, "mock", out_file)

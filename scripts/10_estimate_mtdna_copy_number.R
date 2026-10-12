@@ -3,7 +3,8 @@
 #
 # Formula: estimated copies = nuclear ploidy * mean mtDNA depth / mean nuclear depth.
 # This is an assay-dependent estimate, not an independently calibrated molecule count.
-# main.nf runs this per sample after step 09; it can also run directly.
+# main.nf runs this per sample from step 06 singlets, alongside step 09.
+# It can also run directly.
 # Run with --help for arguments. All BED files use 0-based, end-exclusive coordinates.
 # Required R packages are listed in environment.yml. Signac is needed only
 # when selecting bins with its default blacklist; a custom BED avoids that dependency.
@@ -44,16 +45,27 @@ load_signac_mm10_blacklist <- function() {
 select_reference <- function(fragments, cells, lengths, blacklist, bin_size, quantile_cutoff) {
   chroms <- grep("^chr([1-9]|1[0-9])$", names(lengths), value = TRUE)
   if (!length(chroms)) fail("Reference selection requires mouse chr1-chr19 contigs in the BAM header")
+  bin_counts <- floor(lengths[chroms] / bin_size)
+  chroms <- chroms[bin_counts > 0]
+  bin_counts <- bin_counts[chroms]
+  if (!length(chroms)) fail("No full-width autosomal bins; reduce --bin-size")
+  offsets <- setNames(c(0, head(cumsum(bin_counts), -1L)), chroms)
   bins <- do.call(c, lapply(chroms, function(chrom) {
     starts <- seq_len(floor(lengths[[chrom]] / bin_size)) * bin_size - bin_size + 1
     GenomicRanges::GRanges(chrom, IRanges::IRanges(starts, width = bin_size))
   }))
   # Discard any bin overlapping a blacklist interval, not just endpoints.
-  bins <- bins[!IRanges::overlapsAny(bins, blacklist, ignore.strand = TRUE)]
+  if (length(blacklist))
+    bins <- bins[!IRanges::overlapsAny(bins, blacklist, ignore.strand = TRUE)]
   if (!length(bins)) fail("No eligible nuclear bins after blacklisting")
-  keys <- paste(as.character(GenomicRanges::seqnames(bins)),
-                (IRanges::start(bins) - 1L) %/% bin_size, sep = ":")
+  # Integer lookup avoids building and repeatedly hashing millions of strings
+  # such as 'chr1:1234'. Zero marks a blacklisted (ineligible) bin.
+  bin_lookup <- integer(sum(bin_counts))
+  index <- unname(offsets[as.character(GenomicRanges::seqnames(bins))]) +
+    (IRanges::start(bins) - 1L) %/% bin_size + 1L
+  bin_lookup[index] <- seq_along(bins)
   scores <- numeric(length(bins))
+  message("Selecting nuclear reference from ", length(bins), " eligible bins")
   connection <- gzfile(fragments, "rt"); on.exit(close(connection), add = TRUE)
   repeat {
     # Stream input to avoid loading a large fragments file into RAM.
@@ -72,14 +84,18 @@ select_reference <- function(fragments, cells, lengths, blacklist, bin_size, qua
       fail("Invalid fragment coordinates")
     # Each unique fragment contributes two endpoints; readSupport is deliberately
     # ignored because it contains PCR duplicates. BED end is exclusive: use end-1.
-    hits <- match(c(paste(tab[[1]], left %/% bin_size, sep = ":"),
-                    paste(tab[[1]], (right - 1) %/% bin_size, sep = ":")), keys)
-    scores <- scores + tabulate(hits[!is.na(hits)], nbins = length(bins))
+    local <- c(left %/% bin_size, (right - 1) %/% bin_size)
+    # A chromosome's trailing partial bin is intentionally excluded. Check its
+    # local index before applying offsets, so it cannot alias the next chromosome.
+    full_width <- local < rep(unname(bin_counts[tab[[1]]]), 2L)
+    global <- local[full_width] + rep(unname(offsets[tab[[1]]]), 2L)[full_width] + 1L
+    scores <- scores + tabulate(bin_lookup[global], nbins = length(bins))
   }
   cutoff <- stats::quantile(scores, quantile_cutoff, names = FALSE)
   # Strict '>' follows the notebook. Ties can mean fewer than 1.5% are selected.
   selected <- bins[scores > cutoff]
   if (!length(selected)) fail("No bins above accessibility quantile; adjust --quantile")
+  message("Selected ", length(selected), " bins above score cutoff ", cutoff)
   GenomicRanges::reduce(selected, ignore.strand = TRUE)
 }
 
@@ -119,10 +135,82 @@ count_read_bases <- function(cigar, position, sequence, quality, intervals, min_
   total
 }
 
+# Return one count per alignment. Parse CIGARs and intersect reference blocks
+# in batches, rather than creating a vector of every aligned base for every read.
+# Only M/= /X blocks contribute; query offsets preserve insertions and clips.
+count_alignment_bases <- function(cigar, position, chromosome, sequence, quality,
+                                  reference, min_baseq,
+                                  reference_index = GenomicRanges::GNCList(reference)) {
+  counts <- numeric(length(cigar))
+  if (!length(cigar)) return(counts)
+  if (requireNamespace("cigarillo", quietly = TRUE)) {
+    ref <- cigarillo::cigars_as_ranges_along_ref(cigar, lmmpos = position,
+                                               ops = c("M", "=", "X"))
+    qry <- cigarillo::cigars_as_ranges_along_query(cigar, ops = c("M", "=", "X"))
+  } else {
+    ref <- GenomicAlignments::cigarRangesAlongReferenceSpace(cigar, pos = position,
+                                                           ops = c("M", "=", "X"))
+    qry <- GenomicAlignments::cigarRangesAlongQuerySpace(cigar, ops = c("M", "=", "X"))
+  }
+  block_read <- rep.int(seq_along(cigar), lengths(ref))
+  if (!length(block_read)) return(counts)
+  ref <- unlist(ref, use.names = FALSE)
+  qry <- unlist(qry, use.names = FALSE)
+  blocks <- GenomicRanges::GRanges(chromosome[block_read], ref)
+  hits <- GenomicRanges::findOverlaps(blocks, reference_index, ignore.strand = TRUE)
+  if (!length(hits)) return(counts)
+  block <- S4Vectors::queryHits(hits)
+  region <- S4Vectors::subjectHits(hits)
+  read <- block_read[block]
+
+  # Intersections give the exact query subsequences inside the BED. One read
+  # can contribute several pieces, but will still be counted as one read below.
+  left <- pmax(IRanges::start(ref)[block], IRanges::start(reference)[region])
+  right <- pmin(IRanges::end(ref)[block], IRanges::end(reference)[region])
+  query_start <- IRanges::start(qry)[block] + left - IRanges::start(ref)[block]
+  query_end <- query_start + right - left
+  sequence <- sequence[read]
+  quality <- methods::as(quality[read], "BStringSet")
+  usable <- Biostrings::width(sequence) > 0L & Biostrings::width(quality) > 0L
+  # Preserve the original missing-quality rule, including the SAM '*' sentinel.
+  single <- which(Biostrings::width(quality) == 1L)
+  usable[single] <- usable[single] & as.character(quality[single]) != "*"
+  if (!any(usable)) return(counts)
+  if (any(Biostrings::width(sequence)[usable] != Biostrings::width(quality)[usable]))
+    fail("Inconsistent BAM sequence/qualities")
+  read <- read[usable]
+  sequence <- Biostrings::subseq(sequence[usable], start = query_start[usable],
+                                end = query_end[usable])
+  quality <- Biostrings::subseq(quality[usable], start = query_start[usable],
+                               end = query_end[usable])
+  piece_counts <- as.numeric(Biostrings::letterFrequency(sequence, letters = "ACGT"))
+  if (min_baseq >= 0) {
+    # PHRED+33: include the negative-quality encoding too. Rsamtools converts
+    # absent BAM qualities to spaces (score -1), which must fail even baseq=0.
+    low_letters <- paste(intToUtf8(seq.int(1L, min(126L, 32L + min_baseq)),
+                                  multiple = TRUE), collapse = "")
+    low_quality <- which(Biostrings::letterFrequency(quality, letters = low_letters)[, 1] > 0)
+    # Most pieces can use compiled letterFrequency directly. For pieces with
+    # low-quality bases, intersect the base and quality masks at each position.
+    sequences <- as.character(sequence[low_quality])
+    qualities <- as.character(quality[low_quality])
+    for (i in seq_along(low_quality)) {
+      bases <- strsplit(sequences[i], "", fixed = TRUE)[[1]]
+      piece_counts[low_quality[i]] <- sum(bases %in% c("A", "C", "G", "T") &
+                                          utf8ToInt(qualities[i]) - 33L >= min_baseq)
+    }
+  }
+  summed <- rowsum(piece_counts, group = read, reorder = FALSE)
+  counts[as.integer(rownames(summed))] <- summed[, 1]
+  counts
+}
+
 nuclear_coverage <- function(path, reference, cells, barcode_lookup, mapq, baseq, keep_duplicates) {
   totals <- setNames(numeric(length(cells)), cells)
   reads <- totals
-  ranges <- split(IRanges::ranges(reference), as.character(GenomicRanges::seqnames(reference)))
+  reference <- GenomicRanges::sort(GenomicRanges::reduce(reference, ignore.strand = TRUE))
+  reference_index <- GenomicRanges::GNCList(reference)
+  chromosomes <- unique(as.character(GenomicRanges::seqnames(reference)))
   bam <- Rsamtools::BamFile(path, yieldSize = 100000L)
   open(bam); on.exit(close(bam), add = TRUE)
   # Scan once in bounded chunks. Fetching each selected interval separately can
@@ -132,23 +220,28 @@ nuclear_coverage <- function(path, reference, cells, barcode_lookup, mapq, baseq
       isSupplementaryAlignment = FALSE, isNotPassingQualityControls = FALSE,
       isDuplicate = if (keep_duplicates) NA else FALSE),
     mapqFilter = mapq, tag = "CB", what = c("rname", "pos", "cigar", "seq", "qual"))
+  chunk_number <- 0L
   repeat {
     chunk <- Rsamtools::scanBam(bam, param = param)[[1]]
     if (!length(chunk$pos)) break
+    chunk_number <- chunk_number + 1L
     cb <- as.character(chunk$tag$CB)
     canonical <- unname(barcode_lookup[cb])
     chrom <- as.character(chunk$rname)
-    valid <- which(!is.na(canonical) & canonical %in% cells & chrom %in% names(ranges))
-    sequences <- as.character(chunk$seq); qualities <- as.character(chunk$qual)
-    for (i in valid) {
-      n <- count_read_bases(chunk$cigar[i], chunk$pos[i], sequences[i], qualities[i],
-                            ranges[[chrom[i]]], baseq)
-      if (n > 0) {
-        totals[[canonical[i]]] <- totals[[canonical[i]]] + n
-        reads[[canonical[i]]] <- reads[[canonical[i]]] + 1
-      }
+    cell_index <- match(canonical, cells)
+    valid <- which(!is.na(cell_index) & chrom %in% chromosomes)
+    if (length(valid)) {
+      n <- count_alignment_bases(chunk$cigar[valid], chunk$pos[valid], chrom[valid],
+        chunk$seq[valid], chunk$qual[valid], reference, baseq, reference_index)
+      grouped <- rowsum(n, group = cell_index[valid], reorder = FALSE)
+      index <- as.integer(rownames(grouped))
+      totals[index] <- totals[index] + grouped[, 1]
+      # A read spanning several selected regions contributes one read count.
+      reads <- reads + tabulate(cell_index[valid][n > 0], nbins = length(cells))
     }
-    message("Scanned BAM chunk; accumulated nuclear bases: ", sum(totals))
+    message("Scanned BAM chunk ", chunk_number, ": ", length(chunk$pos),
+      " filtered alignments; ", length(valid),
+      " retained-cell nuclear alignments; accumulated nuclear bases: ", sum(totals))
   }
   list(bases = totals, reads = reads)
 }
@@ -240,7 +333,7 @@ main <- function(args) {
     if (opts[[key]] != floor(opts[[key]])) fail("--", key, " must be an integer")
   if (opts$quantile >= 1 || opts[["bin-size"]] < 1 || opts$ploidy <= 0) fail("Invalid quantile/bin size/ploidy")
   if (!opts[["keep-duplicates"]] %in% c("true", "false")) fail("Invalid --keep-duplicates")
-  for (pkg in c("Rsamtools", "GenomicRanges", "GenomicAlignments"))
+  for (pkg in c("Rsamtools", "GenomicRanges", "GenomicAlignments", "Biostrings"))
     if (!requireNamespace(pkg, quietly = TRUE)) fail("Missing R package: ", pkg)
   if (sum(!vapply(opts[c("barcodes", "metrics-tsv")], is.null, logical(1))) != 1L)
     fail("Provide exactly one of --barcodes and --metrics-tsv")
@@ -344,6 +437,7 @@ main <- function(args) {
   # Save all thresholds and versions alongside results for reproducibility.
   capture.output(list(arguments = opts, nuclear_reference_bp = reference_bp,
     mgatk_depth_files = lapply(depths, function(x) x$file), blacklist_source = blacklist_source,
+    coverage_method = "batched CIGAR intersections and quality-filtered sequence counts",
     overlap_policy = "count each mate separately",
     session = sessionInfo()), file = paste0(prefix, ".settings.txt"))
   message("Wrote estimates: ", prefix, ".mtDNA_copy_number.tsv")

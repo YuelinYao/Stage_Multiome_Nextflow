@@ -30,7 +30,9 @@ run_checks <- function() {
   preprocess <- env$preprocess_qc_rna
   env$preprocess_qc_rna <- function(obj, settings, default_pca) {
     stopifnot(settings$algorithm == 1, settings$resolution == 0.1,
-              identical(settings$RNA_dims, 1:15), default_pca)
+              identical(settings$RNA_dims, 1:15), default_pca,
+              !('pre_doublet_clusters' %in% colnames(obj[[]])),
+              all(obj$reviewed_qc_cluster == '0'))
     preprocess(obj, settings, default_pca)
   }
   env$paramSweep <- function(seu, PCs, sct) {
@@ -65,6 +67,10 @@ run_checks <- function() {
             report$expected_doublets_unadjusted == 4, report$expected_doublets == 3,
             report$df_pcs == paste(1:15, collapse = ','), report$pca_computed == 50)
   rna <- readRDS(env$args[5]); atac <- readRDS(env$args[6])
+  barcodes <- read.delim(file.path(task_dir, 'WT_1.singlet_barcodes.tsv'),
+                        colClasses = 'character')
+  stopifnot(identical(names(barcodes), c('sample_id', 'barcode')),
+            all(barcodes$sample_id == 'WT_1'), identical(barcodes$barcode, unname(rna$barcode)))
   stopifnot(file.info(file.path(task_dir, 'WT_1_Doublet.pdf'))$size > 0,
             all(rna$DoubletFinder == 'Singlet'))
   stopifnot(identical(colnames(rna), colnames(atac)), ncol(rna) == 107,
