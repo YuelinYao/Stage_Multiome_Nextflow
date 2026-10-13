@@ -75,10 +75,10 @@ run_tests <- function() {
     dual$qc_status_enriched[3] == "zero_nuclear_coverage",
     is.na(dual$mtDNA_CN_normalised_enriched[3]),
     any(grepl(enriched_file, readLines(paste0(prefix, ".settings.txt")), fixed = TRUE)))
-  writeLines("CELL1\t5", enriched_file)
+  writeLines("CELL1\t4", enriched_file)  # below the default min_mt_depth of 5
   low_enriched <- main(c(args, "--mgatk-enriched-dir", enriched))
   stopifnot(low_enriched$mtDNA_CN_normalised[1] == 200,
-    low_enriched$mtDNA_CN_normalised_enriched_raw[1] == 10,
+    low_enriched$mtDNA_CN_normalised_enriched_raw[1] == 8,
     is.na(low_enriched$mtDNA_CN_normalised_enriched[1]),
     low_enriched$qc_status_enriched[1] == "low_mitochondrial_coverage")
   # A completely unmatched source stays missing without losing the other ratio.

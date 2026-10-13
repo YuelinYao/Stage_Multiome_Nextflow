@@ -19,7 +19,7 @@ class PipelineSettings {
 
     static Map defaults() {
         [review_QC_cluster: [RNA_dims: '1:20', algorithm: 3, resolution: 2],
-         doublet: [PC_dims: '1:20', algorithm: 3, resolution: 2],
+         doublet: [PC_dims: '1:20', algorithm: 3, resolution: 2, remove_mf_doublets: true],
          RNA_processing: [RNA_dims: '1:20', RNA_umap_dims: '1:50', algorithm: 3,
                           resolution: 2, integrate_rna: true],
          ATAC_processing: [ATAC_dims: '2:40', ATAC_integrate_dims: '1:40', algorithm: 3,
@@ -28,7 +28,7 @@ class PipelineSettings {
                plot_point_size: 0.1, lineage_assay: 'SCT',
                lineage_markers: ['Pou3f1', 'Foxa1', 'Pdgfra']],
          copy_number: [bin_size: 500, quantile: 0.985, mapq: 30, baseq: 20, ploidy: 2,
-                       min_nuclear_bases: 1000, min_mt_depth: 10, keep_duplicates: false,
+                       min_nuclear_bases: 1000, min_mt_depth: 5, keep_duplicates: false,
                        reference_bed: null, blacklist: null]]
     }
 
@@ -131,6 +131,8 @@ class PipelineSettings {
         def doublet = result.doublet
         doublet.expected_rate = doublet.expected_rate == null ? 'auto' : doublet.expected_rate
         rate(doublet.expected_rate)
+        if (!(doublet.remove_mf_doublets instanceof Boolean))
+            throw new IllegalArgumentException('doublet.remove_mf_doublets must be true or false')
         ['sample_rates', 'exclude_clusters'].each { key ->
             doublet[key] = doublet[key] == null ? [:] : doublet[key]
             object(doublet[key], "doublet.${key}")
@@ -186,7 +188,7 @@ class PipelineSettings {
         if (!doublet) return canonical([process: 'review_QC_cluster', thresholds: limits,
                                        review_QC_cluster: settings.review_QC_cluster])
         def values = settings.doublet
-        def selected = values.subMap(['PC_dims', 'algorithm', 'resolution']) +
+        def selected = values.subMap(['PC_dims', 'algorithm', 'resolution', 'remove_mf_doublets']) +
             [expected_rate: values.sample_rates.containsKey(id) ? values.sample_rates[id] : values.expected_rate,
              exclude_clusters: [(id): values.exclude_clusters[id] ?: []]]
         canonical([process: 'doublet', thresholds: limits, doublet: selected])

@@ -20,14 +20,16 @@ items <- lapply(items, function(obj) {
   obj <- FindNeighbors(obj, dims = settings$RNA_dims, verbose = FALSE)
   obj <- FindClusters(obj, algorithm = settings$algorithm, resolution = settings$resolution,
     cluster.name = "sample_rna_clusters", verbose = FALSE)
-  obj <- annotate_sample_rna(obj)
+  # Cell-cycle scores on the final, re-normalised cells; sex_prediction and
+  # CellXY_db come from step 06 in the sample metadata.
+  obj <- score_sample_cell_cycle(obj)
   SCTransform(obj, assay = "RNA", new.assay.name = "SCT",
     vst.flavor = "v2", method = if (requireNamespace("glmGamPoi", quietly = TRUE))
       "glmGamPoi" else "poisson", variable.features.n = 2000, verbose = FALSE)
 })
 annotations <- do.call(rbind, lapply(items, function(obj) {
   data.frame(cell_id = colnames(obj), obj[[]][, c("sample_id", "S.Score", "G2M.Score",
-    "Phase", "sex_prediction"), drop = FALSE], row.names = NULL)
+    "Phase", "sex_prediction", "CellXY_db"), drop = FALSE], row.names = NULL)
 }))
 write_tsv(annotations, "rna_cell_annotations.tsv")
 features <- SelectIntegrationFeatures(items, nfeatures = 2000,

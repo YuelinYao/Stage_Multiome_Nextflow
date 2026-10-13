@@ -278,7 +278,7 @@ main <- function(args) {
     "  --barcode-map ARC/outs/per_barcode_metrics.csv",
     "  --blacklist mm10-blacklist.bed (default: Signac::blacklist_mm10)",
     "  --bin-size 500 --quantile 0.985 --mapq 30 --baseq 20",
-    "  --ploidy 2 --min-nuclear-bases 1000 --min-mt-depth 10",
+    "  --ploidy 2 --min-nuclear-bases 1000 --min-mt-depth 5",
     "  --keep-duplicates true|false (default false)",
     "Barcode file: one original ARC/Seurat barcode per line, no header.",
     "Match quality/duplicate conventions to the mgatk run; this script cannot infer them.", sep = "\n")
@@ -288,7 +288,7 @@ main <- function(args) {
   if (anyDuplicated(keys)) fail("Repeated argument")
   opts <- as.list(args[seq(2L, length(args), 2L)]); names(opts) <- keys
   defaults <- list("bin-size" = "500", quantile = "0.985", mapq = "30", baseq = "20",
-    ploidy = "2", "min-nuclear-bases" = "1000", "min-mt-depth" = "10", "keep-duplicates" = "false")
+    ploidy = "2", "min-nuclear-bases" = "1000", "min-mt-depth" = "5", "keep-duplicates" = "false")
   allowed <- c(names(defaults), "sample", "bam", "barcodes", "mgatk-dir", "mgatk-enriched-dir", "out-prefix",
                "reference-bed", "fragments", "blacklist", "barcode-map", "metrics-tsv", "json")
   if (any(!keys %in% allowed)) fail("Unknown argument: ", paste(setdiff(keys, allowed), collapse = ", "))

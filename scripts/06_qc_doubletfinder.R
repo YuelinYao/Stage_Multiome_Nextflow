@@ -70,6 +70,20 @@ singlets <- colnames(rna)[classifications == "Singlet"]
 message(sample, ": DoubletFinder retained ", length(singlets), " / ", cluster_pass,
         " singlets (removed ", cluster_pass - length(singlets), ")")
 if (length(singlets) < 50L) stop_bad("Fewer than 50 singlets: ", sample)
+df_singlets <- length(singlets)
+rna <- subset(rna, cells = singlets)
+# cellXY on the DoubletFinder singlets: sex_prediction and CellXY_db.
+# Male-female doublets (expressing both female and male genes) are invisible to
+# DoubletFinder when both cells share a type. With doublet.remove_mf_doublets
+# (default true) they are removed here, so RNA, ATAC and the mitochondrial steps
+# all use the same final cells; otherwise they are only flagged in CellXY_db.
+rna <- annotate_cellxy(rna)
+mf_doublets <- colnames(rna)[rna$CellXY_db %in% "Doublet"]
+mf_removed <- if (isTRUE(cfg$doublet$remove_mf_doublets)) mf_doublets else character()
+singlets <- setdiff(singlets, mf_removed)
+message(sample, ": cellXY flagged ", length(mf_doublets), " male-female doublets, removed ",
+        length(mf_removed), "; ", length(singlets), " final singlets")
+if (length(singlets) < 50L) stop_bad("Fewer than 50 singlets after cellXY: ", sample)
 rna <- subset(rna, cells = singlets)
 atac <- subset(assays$atac, cells = singlets)
 atac <- atac[, colnames(rna)]
@@ -88,7 +102,9 @@ write_tsv(data.frame(sample_id = sample, raw_joint = nrow(tab), qc_pass = length
   qc_removed = nrow(tab) - length(keep),
   cluster_pass = cluster_pass, excluded_clusters = paste(cfg$doublet$exclude_clusters, collapse = ","),
   cluster_removed = length(keep) - cluster_pass,
-  df_singlets = length(singlets), df_removed = cluster_pass - length(singlets),
+  df_singlets = df_singlets, df_removed = cluster_pass - df_singlets,
+  mf_doublets_flagged = length(mf_doublets), mf_doublets_removed = length(mf_removed),
+  final_singlets = length(singlets),
   df_pcs = paste(dims, collapse = ","), pca_computed = ncol(Embeddings(rna, "pca")),
   pK = pk, expected_rate = cfg$doublet$expected_rate,
   homotypic_proportion = homotypic_proportion,

@@ -4,7 +4,7 @@ suppressPackageStartupMessages(library(Seurat))
 env <- new.env(parent = globalenv())
 for (expr in parse('scripts/00_common.R'))
   if (is.call(expr) && identical(expr[[1]], as.name('<-'))) eval(expr, env)
-run_checks <- function() {
+run_checks <- function(remove_mf = TRUE) {
   task_dir <- tempfile(); dir.create(task_dir)
   on.exit(unlink(task_dir, recursive = TRUE), add = TRUE)
   set.seed(19)
@@ -21,7 +21,7 @@ run_checks <- function() {
   review_file <- file.path(task_dir, 'review.tsv'); env$write_tsv(review, review_file)
   env$read_pipeline_config <- function(...) list(thresholds = limits,
     review_QC_cluster = list(RNA_dims = 1:2, resolution = 9, algorithm = 3),
-    doublet = list(PC_dims = 1:15, algorithm = 1, resolution = 0.1, expected_rate = 'auto', exclude_clusters = '7'))
+    doublet = list(PC_dims = 1:15, algorithm = 1, resolution = 0.1, expected_rate = 'auto', exclude_clusters = '7', remove_mf_doublets = remove_mf))
   arc <- file.path(task_dir, 'outs'); dir.create(arc)
   write.csv(data.frame('Estimated number of cells' = '5,000', check.names = FALSE),
             file.path(arc, 'summary.csv'), row.names = FALSE)
@@ -52,6 +52,12 @@ run_checks <- function() {
     stopifnot(identical(PCs, 1:15), pK == 0.01, nExp == 3, !sct)
     seu$DF.classifications_test <- c(rep('Singlet', 107), rep('Doublet', 3)); seu
   }
+  # cellXY stand-in: flag the first two DoubletFinder singlets as male-female doublets.
+  env$annotate_cellxy <- function(obj) {
+    stopifnot(ncol(obj) == 107)
+    obj$sex_prediction <- 'Male'
+    obj$CellXY_db <- ifelse(seq_len(ncol(obj)) <= 2, 'Doublet', 'Singlet'); obj
+  }
   env$args <- c('WT_1', arc, 'bed', 'json', file.path(task_dir, 'rna.rds'),
                 file.path(task_dir, 'atac.rds'), file.path(task_dir, 'qc.tsv'), review_file)
   exprs <- parse('scripts/06_qc_doubletfinder.R')
@@ -60,9 +66,12 @@ run_checks <- function() {
     eval(expr, env)
   }
   report <- read.delim(env$args[7])
+  removed <- if (remove_mf) 2L else 0L   # cellXY flags 2 cells in both runs
   stopifnot(report$raw_joint == 140, report$qc_pass == 130, report$qc_removed == 10,
             report$cluster_pass == 110, report$cluster_removed == 20,
             report$df_singlets == 107, report$df_removed == 3,
+            report$mf_doublets_flagged == 2, report$mf_doublets_removed == removed,
+            report$final_singlets == 107 - removed,
             report$arc_detected_cells == 5000, report$expected_rate == 0.039,
             report$expected_doublets_unadjusted == 4, report$expected_doublets == 3,
             report$df_pcs == paste(1:15, collapse = ','), report$pca_computed == 50)
@@ -73,8 +82,13 @@ run_checks <- function() {
             all(barcodes$sample_id == 'WT_1'), identical(barcodes$barcode, unname(rna$barcode)))
   stopifnot(file.info(file.path(task_dir, 'WT_1_Doublet.pdf'))$size > 0,
             all(rna$DoubletFinder == 'Singlet'))
-  stopifnot(identical(colnames(rna), colnames(atac)), ncol(rna) == 107,
-            all(rna$sample_id == 'WT_1'), identical(unname(rna$barcode), cells[31:137]))
+  stopifnot(identical(colnames(rna), colnames(atac)), ncol(rna) == 107 - removed,
+            all(rna$sample_id == 'WT_1'),
+            identical(unname(rna$barcode), cells[(31 + removed):137]),
+            sum(rna$CellXY_db == 'Doublet') == 2 - removed,
+            all(c('sex_prediction', 'CellXY_db') %in% colnames(rna[[]])),
+            !('Phase' %in% colnames(rna[[]])))
 }
 run_checks()
+run_checks(remove_mf = FALSE)
 cat('All DoubletFinder stage checks passed.\n')

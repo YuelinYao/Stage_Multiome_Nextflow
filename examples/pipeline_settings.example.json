@@ -54,7 +54,8 @@
     "resolution": 2,
     "expected_rate": "auto",
     "sample_rates": {},
-    "exclude_clusters": {}
+    "exclude_clusters": {},
+    "remove_mf_doublets": true
   },
   "RNA_processing": {
     "RNA_dims": "1:20",

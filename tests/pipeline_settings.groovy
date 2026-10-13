@@ -66,6 +66,11 @@ expectError { PipelineSettings.peaks([peak_min: '20']) }
 expectError { PipelineSettings.peaks([peak_max: 2147483648L]) }
 modified = fresh(); modified.doublet.PC_dims = null
 assert PipelineSettings.sample(PipelineSettings.normalize(modified), 'WT_1', true).doublet.PC_dims == '1:20'
+// remove_mf_doublets defaults to true and reaches each sample's doublet task.
+modified = fresh(); modified.doublet.remove("remove_mf_doublets")
+assert PipelineSettings.sample(PipelineSettings.normalize(modified), 'WT_1', true).doublet.remove_mf_doublets == true
+modified = fresh(); modified.doublet.remove_mf_doublets = false
+assert PipelineSettings.sample(PipelineSettings.normalize(modified), 'WT_1', true).doublet.remove_mf_doublets == false
 modified = fresh(); modified.sample_overrides = ['': [:]]
 expectError { PipelineSettings.normalize(modified) }
 // Fail before scheduling tasks, including invalid overrides for other samples.
@@ -76,6 +81,7 @@ for (mutate in [
     { it.doublet.sample_rates = [other: 2] },
     { it.doublet.exclude_clusters = [other: [2]] },
     { it.doublet.PC_dims = '2:20' },
+    { it.doublet.remove_mf_doublets = 'yes' },
     { it.RNA_processing.algorithm = '3' },
     { it.RNA_processing.resolution = 0 },
     { it.ATAC_processing.integrate_atac = 'false' },

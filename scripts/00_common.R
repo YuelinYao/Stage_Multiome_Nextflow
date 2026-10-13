@@ -127,7 +127,7 @@ qc_table <- function(sample, assays) {
 # Independent defaults for each analysis step, used by the configuration reader.
 pipeline_analysis_defaults <- function() list(
   review_QC_cluster = list(RNA_dims = "1:20", algorithm = 3L, resolution = 2),
-  doublet = list(PC_dims = "1:20", algorithm = 3L, resolution = 2),
+  doublet = list(PC_dims = "1:20", algorithm = 3L, resolution = 2, remove_mf_doublets = TRUE),
   RNA_processing = list(RNA_dims = "1:20", RNA_umap_dims = "1:50",
                         algorithm = 3L, resolution = 2, integrate_rna = TRUE),
   ATAC_processing = list(ATAC_dims = "2:40", ATAC_integrate_dims = "1:40",
@@ -391,8 +391,12 @@ read_pipeline_config <- function(file, sample = NULL, process = NULL) {
   }
   excluded <- if (is.null(sample)) character() else
     as.character(unlist(doublet$exclude_clusters[[sample]], use.names = FALSE))
+  if (length(doublet$remove_mf_doublets) != 1L || !is.logical(doublet$remove_mf_doublets) ||
+      is.na(doublet$remove_mf_doublets))
+    stop_bad("doublet.remove_mf_doublets must be true or false")
   cfg$doublet <- list(PC_dims = doublet_dims, algorithm = doublet$algorithm,
-    resolution = doublet$resolution, expected_rate = rate, exclude_clusters = excluded)
+    resolution = doublet$resolution, expected_rate = rate, exclude_clusters = excluded,
+    remove_mf_doublets = doublet$remove_mf_doublets)
   if (!is.null(component_count)) {
     used <- if (process == "RNA_processing")
       c(cfg$RNA_processing$RNA_dims, cfg$RNA_processing$RNA_umap_dims) else
@@ -504,18 +508,25 @@ score_sample_cell_cycle <- function(obj) {
   obj@misc$cell_cycle_features <- list(S = s, G2M = g2m)
   obj
 }
-annotate_sample_rna <- function(obj) {
+# cellXY sex and male-female doublet predictions from raw RNA counts (step 06).
+annotate_cellxy <- function(obj) {
   if (!requireNamespace("cellXY", quietly = TRUE))
     stop_bad("Install phipsonlab/cellXY for classifySex")
-  obj <- score_sample_cell_cycle(obj)
   counts <- GetAssayData(obj, assay = "RNA", layer = "counts")
-  prediction <- cellXY::classifySex(counts, genome = "Mm", qc = FALSE)
-  if (!"prediction" %in% colnames(prediction) ||
-      !all(colnames(obj) %in% rownames(prediction)))
-    stop_bad("classifySex returned missing cell IDs or prediction column")
-  sex <- as.character(prediction[colnames(obj), "prediction"])
-  sex[sex == "NA"] <- NA_character_
-  obj$sex_prediction <- sex
+  # Both cellXY functions return a 'prediction' column per cell, with "NA" when uncertain.
+  cell_predictions <- function(prediction, label) {
+    if (!"prediction" %in% colnames(prediction) ||
+        !all(colnames(obj) %in% rownames(prediction)))
+      stop_bad(label, " returned missing cell IDs or prediction column")
+    values <- as.character(prediction[colnames(obj), "prediction"])
+    values[values == "NA"] <- NA_character_
+    values
+  }
+  obj$sex_prediction <- cell_predictions(
+    cellXY::classifySex(counts, genome = "Mm", qc = FALSE), "classifySex")
+  # Male-female doublets: cells expressing both female (Xist) and male (chrY) genes.
+  obj$CellXY_db <- cell_predictions(
+    cellXY::findMfDoublet(counts, genome = "Mm"), "findMfDoublet")
   obj
 }
 read_stage_objects <- function(files, assay) {

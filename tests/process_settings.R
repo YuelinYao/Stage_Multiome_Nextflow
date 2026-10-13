@@ -13,12 +13,21 @@ full <- jsonlite::fromJSON("examples/pipeline_settings.example.json", simplifyVe
 review <- list(process = "review_QC_cluster", thresholds = full$thresholds,
                review_QC_cluster = full$review_QC_cluster)
 stopifnot(identical(read_task(review)$review_QC_cluster$RNA_dims, 1:20))
-doublet <- list(process = "doublet", thresholds = full$thresholds,
-  doublet = c(full$doublet, list(expected_rate = 0.04)))
+doublet <- list(process = "doublet", thresholds = full$thresholds, doublet = full$doublet)
+doublet$doublet$expected_rate <- 0.04
 doublet$doublet$exclude_clusters <- list(WT_1 = list("2", "4"))
 actual <- read_task(doublet)
 stopifnot(actual$doublet$expected_rate == 0.04,
-          identical(actual$doublet$exclude_clusters, c("2", "4")))
+          identical(actual$doublet$exclude_clusters, c("2", "4")),
+          isTRUE(actual$doublet$remove_mf_doublets))
+# remove_mf_doublets defaults to true, accepts false and rejects non-logical values.
+doublet$doublet$remove_mf_doublets <- NULL
+stopifnot(isTRUE(read_task(doublet)$doublet$remove_mf_doublets))
+doublet$doublet$remove_mf_doublets <- FALSE
+stopifnot(identical(read_task(doublet)$doublet$remove_mf_doublets, FALSE))
+doublet$doublet$remove_mf_doublets <- "yes"
+expect_error(read_task(doublet))
+doublet$doublet$remove_mf_doublets <- TRUE
 # Stage tasks need no QC bounds, exclusions or settings from other stages.
 rna <- list(process = "RNA_processing", RNA_processing = full$RNA_processing,
             component_count = 55)

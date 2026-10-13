@@ -22,6 +22,8 @@ run_checks <- function() {
     counts <- matrix(rpois(length(means), means), 900, 140,
       dimnames = list(paste0('gene', seq_len(900)), cells))
     obj <- CreateSeuratObject(counts, assay = 'RNA'); obj$sample_id <- id
+    # Step 06 adds the cellXY columns before step 07 reads the object.
+    obj$sex_prediction <- 'Male'; obj$CellXY_db <- 'Singlet'
     file <- file.path(task_dir, paste0(id, '.rds')); saveRDS(obj, file); file
   }, character(1))
   cfg$RNA_processing$algorithm <- 1
@@ -32,10 +34,13 @@ run_checks <- function() {
   cfg <- list(process = 'RNA_processing', RNA_processing = cfg$RNA_processing, component_count = 30)
   config <- file.path(task_dir, 'settings.json')
   jsonlite::write_json(cfg, config, auto_unbox = TRUE, null = 'null')
-  env$annotate_sample_rna <- function(obj) {
-    obj$S.Score <- 0; obj$G2M.Score <- 0
-    obj$Phase <- 'G1'; obj$sex_prediction <- NA_character_; obj
+  # Step 07 scores the cell cycle on each sample; cellXY columns come from step 06.
+  annotated <- 0L
+  env$score_sample_cell_cycle <- function(obj) {
+    annotated <<- annotated + 1L
+    obj$S.Score <- 1; obj$G2M.Score <- 1; obj$Phase <- 'S'; obj
   }
+  env$annotate_cellxy <- function(obj) stop('cellXY runs in step 06 only')
   env$args <- c(config, files)
   setwd(task_dir)
   for (expr in parse(script)[-(1:2)]) eval(expr, env)
@@ -48,7 +53,10 @@ run_checks <- function() {
             file.exists('rna_unintegrated.rds'), file.exists('rna_integrated.rds'),
             !file.exists('rna_stage.rds'))
   annotations <- read.delim('rna_cell_annotations.tsv')
-  stopifnot(nrow(annotations) == 280, !anyDuplicated(annotations$cell_id))
+  stopifnot(nrow(annotations) == 280, !anyDuplicated(annotations$cell_id),
+            all(c('sex_prediction', 'CellXY_db') %in% names(annotations)),
+            all(annotations$CellXY_db == 'Singlet'), annotated == 2L,
+            all(annotations$Phase == 'S'), all(annotations$sex_prediction == 'Male'))
   # A fresh single-sample run without integration saves only the unintegrated
   # object; it is also the object that Nextflow supplies to WNN.
   unlink(c('rna_unintegrated.rds', 'rna_integrated.rds', 'rna_cell_annotations.tsv'))

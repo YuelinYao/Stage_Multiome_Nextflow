@@ -81,7 +81,7 @@ The workflow analyses one developmental stage at a time and is run three times f
 | --- | --- | --- | --- |
 | 1\. `review` | 01–04 | 01: call ATAC peaks per sample<br>02: merge them into one common peak set for the stage<br>03: calculate eight RNA/ATAC QC metrics per cell<br>04: summarise the metrics (MAD-based candidate bounds, violin plots)<br>No cells are removed. | Inspect `<outdir>/<stage>/qc/review/`, then set the QC `thresholds` (and any `sample_overrides`) in the JSON. |
 | 2\. `cluster_review` | 05 | 05: apply your QC thresholds to each sample, cluster the QC-passing cells on RNA, and write per-cluster QC summaries, violin plots and marker genes<br>No cells are removed. | Inspect `<outdir>/<stage>/qc/cluster_review/`, then list low-quality cluster IDs per sample in `doublet.exclude_clusters`. |
-| 3\. `analysis` | 06–14 | 06: remove QC-failing cells and the excluded clusters, then remove doublets with DoubletFinder<br>07–08: preprocess RNA and ATAC per sample, then merge and integrate each modality across samples; add ATAC gene activity and chromVAR motif assays<br>09–10: measure 5019/5024 heteroplasmy and mtDNA copy number per cell<br>11–12: combine RNA and ATAC and build WNN clusters<br>13: attach the mitochondrial measurements to the WNN object<br>14: find RNA markers for each WNN cluster | Use `<outdir>/<stage>/objects/wnn_mgatk.rds` and the other published results. |
+| 3\. `analysis` | 06–14 | 06: remove QC-failing cells and the excluded clusters, then remove doublets with DoubletFinder and male-female doublets with cellXY; add sex predictions<br>07–08: preprocess RNA and ATAC per sample (scoring the cell cycle on the final cells), then merge and integrate each modality across samples; add ATAC gene activity and chromVAR motif assays<br>09–10: measure 5019/5024 heteroplasmy and mtDNA copy number per cell<br>11–12: combine RNA and ATAC and build WNN clusters<br>13: attach the mitochondrial measurements to the WNN object<br>14: find RNA markers for each WNN cluster | Use `<outdir>/<stage>/objects/wnn_mgatk.rds` and the other published results. |
 
 ```mermaid
 flowchart TD
@@ -95,7 +95,7 @@ flowchart TD
   THRESHOLDS --> CLUSTER_REVIEW
   CLUSTER_REVIEW --> EXCLUSIONS["You: choose clusters to exclude"]
   subgraph P3["Phase 3: analysis"]
-    QC["06: QC → cluster removal → DoubletFinder"]
+    QC["06: QC → cluster removal → DoubletFinder → cellXY"]
     QC --> RNA["07: RNA preprocessing and integration"]
     QC --> ATAC["08: ATAC preprocessing and integration"]
     QC --> MGATK["09: 5019 and 5024 heteroplasmy"]
@@ -174,7 +174,7 @@ Section and parameter names are case-sensitive. Unknown parameters/sections, inv
 | `thresholds` | `min`, `max` for each of the eight QC metrics | `05_review_clusters.R`, `06_qc_doubletfinder.R` |
 | `sample_overrides` | Per-sample `min`, `max` for selected QC metrics | `05_review_clusters.R`, `06_qc_doubletfinder.R` |
 | `review_QC_cluster` | `RNA_dims`, `algorithm`, `resolution` | `05_review_clusters.R` |
-| `doublet` | `PC_dims`, `algorithm`, `resolution`, `exclude_clusters`; optional `expected_rate`, `sample_rates` | `06_qc_doubletfinder.R` |
+| `doublet` | `PC_dims`, `algorithm`, `resolution`, `exclude_clusters`, `remove_mf_doublets`; optional `expected_rate`, `sample_rates` | `06_qc_doubletfinder.R` |
 | `RNA_processing` | `RNA_dims`, `RNA_umap_dims`, `algorithm`, `resolution`, `integrate_rna` | `07_preprocess_rna.R` |
 | `ATAC_processing` | `ATAC_dims`, `ATAC_integrate_dims`, `algorithm`, `resolution`, `integrate_atac`, `min_cutoff` | `08_preprocess_atac.R` |
 | `copy_number` | `bin_size`, `quantile`, `mapq`, `baseq`, `ploidy`, `min_nuclear_bases`, `min_mt_depth`, `keep_duplicates`, `reference_bed`, `blacklist` | `10_estimate_mtdna_copy_number.R` |
@@ -251,9 +251,12 @@ With the shared RNA count limits above, `5019_Hi_1` instead keeps cells with 1,2
   "PC_dims": "1:20",
   "algorithm": 3,
   "resolution": 2,
-  "exclude_clusters": {"5019_Hi_1": ["3", "7"]}
+  "exclude_clusters": {"5019_Hi_1": ["3", "7"]},
+  "remove_mf_doublets": true
 }
 ```
+
+`remove_mf_doublets` (default `true`) removes the cellXY male-female doublets (`CellXY_db == "Doublet"`) after DoubletFinder; set it to `false` to keep them flagged only, for example for samples from a single embryo, where male-female doublets cannot occur.
 
 By default, the expected rate is estimated from ARC’s detected-cell count using `nextgem_multiome_doublet_rate()`. The expected doublet count is adjusted for homotypic doublets. `expected_rate` (default `"auto"`) and `sample_rates` (default `{}`) are optional overrides: a number between 0 and 1 replaces the ARC-based estimate for all samples or for the samples named in `sample_rates`, for example `"sample_rates": {"5019_Hi_1": 0.05}`. Omit both to use ARC-based estimation. See Step 06 for the Next GEM Multiome assumption and supported count range.
 
@@ -294,7 +297,7 @@ By default, the expected rate is estimated from ARC’s detected-cell count usin
   "baseq": 20,
   "ploidy": 2,
   "min_nuclear_bases": 1000,
-  "min_mt_depth": 10,
+  "min_mt_depth": 5,
   "keep_duplicates": false,
   "reference_bed": null,
   "blacklist": null
@@ -400,6 +403,58 @@ The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phas
 
 The per-sample `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints remain in the `QC_FILTER_DOUBLET` task directory under `<outdir>/<stage>/work/`; they are not copied into the published results. Task logs (`.command.log`, `.command.err`, `.command.out`) are also under `work/`, while `.nextflow.log` is in the launch directory. Keep `work/` and `.nextflow/` when resuming runs. ATAC-containing RDS objects refer to the original fragment files, so those shared input paths must remain accessible when using fragment-based Signac functions later.
 
+## Vignette: example test run
+
+This example runs all three phases on the three test samples in [examples/samples_test.csv](examples/samples_test.csv) (stage E8.5), using copies of the example settings. The output folder is set by `outdir` inside `pipeline_settings.example.json`, not on the command line. The example points to an existing location:
+
+```json
+"outdir": "/suffolk/WorkGenomicsD/yy605/stage_results_test",
+```
+
+Before starting, edit `outdir` in your copied file to a folder of your own, for example `"outdir": "/path/to/test_run/results"`. Otherwise results, `work/` and `reports/` are written to, and may overwrite, the folder above.
+
+```bash
+mkdir test_run
+cd test_run
+cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/pipeline_settings.example.json .
+cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/site.config .
+```
+
+Run all three phases from inside `test_run`, so `-resume` can reuse earlier tasks.
+
+**1. Review**: peaks and QC metrics (steps 01–04).
+
+```bash
+NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file pipeline_settings.example.json \
+  --phase review \
+  -profile slurm,conda -c site.config
+```
+
+Inspect `<outdir>/E8.5/qc/review/` and adjust `thresholds` in `pipeline_settings.example.json` if needed.
+
+**2. Cluster review**: clusters of QC-passing cells (step 05).
+
+```bash
+NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file pipeline_settings.example.json \
+  --phase cluster_review \
+  -profile slurm,conda -c site.config -resume
+```
+
+Inspect `<outdir>/E8.5/qc/cluster_review/` and list any low-quality cluster IDs per sample in `doublet.exclude_clusters`.
+
+**3. Analysis**: steps 06–14.
+
+```bash
+NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file pipeline_settings.example.json \
+  --phase analysis \
+  -profile slurm,conda -c site.config -resume
+```
+
+The final object is `<outdir>/E8.5/objects/wnn_mgatk.rds`; run times and resource use are in `<outdir>/E8.5/reports/`. Nextflow options take a single dash (`-params-file`, `-profile`, `-c`, `-resume`); pipeline parameters take two (`--phase`).
+
 ## Details for each step
 
 Step labels follow the script filenames. Steps 03 and 04 are described together; 05 performs cluster review before 06 runs DoubletFinder during analysis. The Step 11–12 section covers modality combination and WNN; script 11 is a legacy helper, and the active workflow uses script 12.
@@ -471,7 +526,7 @@ The shared `preprocess_qc_rna` helper in `scripts/00_common.R` explicitly uses s
 
 Outputs in `STAGE/qc/cluster_review/`: `<sample>.cluster_cells.tsv`, `<sample>.cluster_summary.tsv`, `<sample>.cluster_qc.pdf`, and `<sample>.cluster_markers.tsv`. Marker tables retain only rows with finite `p_val_adj < 0.05`. Review RNA counts, mitochondrial percentages and marker informativeness together. Enter unwanted cluster IDs as strings in `doublet.exclude_clusters`. This provides the manual review/removal route described by the [DoubletFinder authors](https://github.com/chris-mcginnis-ucsf/DoubletFinder#best-practices-for-scrna-seq-data-generated-without-sample-multiplexing). For a related example of reviewing QC metrics by cluster, removing low-quality clusters and repeating preprocessing, see the [snRNA-seq Guide: cluster QC](https://lahuuki.github.io/rstats/2026-03-19-snRNAseqGuide/index.html).
 
-### Step 06: joint QC, cluster removal and DoubletFinder
+### Step 06: joint QC, cluster removal, DoubletFinder and cellXY
 
 Step 06 also writes an internal `<sample>.singlet_barcodes.tsv` with `sample_id` and original `barcode` columns. Step 10 consumes it directly, allowing copy-number estimation to start alongside step 09. This table stays in the Nextflow work directory.
 
@@ -480,6 +535,13 @@ Step 06 also writes an internal `<sample>.singlet_barcodes.tsv` with `sample_id`
 DoubletFinder runs separately on each sample, using log-normalized RNA. After reviewed-cluster removal, step 06 uses [Seurat’s default `RunPCA()` setting](https://satijalab.org/seurat/reference/runpca) of 50 computed PCs and uses `doublet.PC_dims` (default PC1–PC20) for neighbours, clustering, the pK sweep and DoubletFinder. Its homotypic-correction clustering uses `doublet.algorithm` and `doublet.resolution`. This configured PC range is a workflow choice; no automatic PC selection is performed. The report records the PCs used as `df_pcs` and the number computed as `pca_computed`. A pN/pK sweep selects the pK with maximum BCmetric. The expected doublet count uses the configured sample rate and a homotypic correction derived from the reclustered RNA populations. Inspect the estimates for your experiment; this correction uses clusters as a proxy for cell types. At least 50 singlets must remain.
 
 By default, omit `expected_rate` and `sample_rates`. Step 06 reads `Estimated number of cells` from each ARC `outs/summary.csv` and passes it to `nextgem_multiome_doublet_rate()`, which linearly interpolates the recovered-nuclei multiplet-rate table in the [Next GEM Multiome guide, page 22](https://cdn.10xgenomics.com/image/upload/v1666737555/support-documents/CG000338_ChromiumNextGEM_Multiome_ATAC_GEX_User_Guide_RevF.pdf#page=22). This assumes Next GEM Multiome chemistry. Counts outside 500–10,000 require an explicit numeric rate; use a numeric global `expected_rate` or per-sample `sample_rates` override for other chemistry or experimentally informed rates. The initial ARC count selects the rate; the count after QC and cluster removal determines `n_exp = max(1, round(cluster_pass × expected_rate × (1 − homotypic_proportion)))`. The report records `arc_detected_cells`, `rate_source`, `expected_rate`, `homotypic_proportion`, `expected_doublets_unadjusted` and the adjusted `expected_doublets`. QC filtering can change the doublet fraction, so this is a starting estimate.
+
+After DoubletFinder, step 06 runs cellXY (`annotate_cellxy()`) on the DoubletFinder singlets of each sample:
+
+-   `cellXY::classifySex(counts, genome = "Mm", qc = FALSE)`: stored as `sex_prediction`. The cells already passed pipeline QC; uncertain predictions remain missing. These are expression-based predictions, not sample sex assignments. cellXY internally converts counts to a dense matrix, so large samples may require substantial RAM.
+-   `cellXY::findMfDoublet(counts, genome = "Mm")`: stored as `CellXY_db` (`Singlet` or `Doublet`). It flags male-female doublets, droplets combining cells that express female (Xist) and male (chrY) genes, which can only arise when embryos of both sexes share a sample. Such cells are usually also called `Male` by `classifySex`. With `doublet.remove_mf_doublets: true` (default) these cells are removed in step 06; with `false` they are only flagged. With removal enabled, all remaining cells are `Singlet`; the numbers flagged and removed are recorded in `<sample>.qc.tsv`.
+
+Male-female doublets are invisible to DoubletFinder when both cells are of the same type, so the two methods complement each other. They are removed after DoubletFinder rather than before, because DoubletFinder's expected doublet count already includes them. The number flagged and removed is recorded in the report.
 
 The resulting singlet barcodes select both RNA and ATAC. Cell names gain the sample prefix; metadata retains `sample_id` and the original `barcode` for mgatk matching. Outputs are individual `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints in the Nextflow work directory, and a published `<sample>.qc.tsv` recording raw/QC/cluster/singlet counts, excluded cluster IDs, pK, rate and expected doublets.
 
@@ -493,18 +555,18 @@ Cell counts are reported per sample in `<outdir>/<stage>/qc/filtered/<sample>.qc
 | 1\. Initial QC metric filtering | `qc_pass` | `qc_removed` |
 | 2\. Reviewed-cluster removal, before reclustering | `cluster_pass` | `cluster_removed` |
 | 3\. DoubletFinder singlet selection | `df_singlets` | `df_removed` |
+| 4\. cellXY male-female doublet removal (`doublet.remove_mf_doublets`) | `final_singlets` | `mf_doublets_removed` (of `mf_doublets_flagged`) |
 
 ### Step 07: individual RNA preprocessing, then stage merge and integration
 
-`07_preprocess_rna.R` uses its task-specific `RNA_processing` settings JSON and all filtered RNA RDS files for the stage. For each sample, in memory, it performs log-normalization, 2,000-variable-gene selection, scaling, individual PCA, neighbours and sample clustering. It then adds:
+`07_preprocess_rna.R` uses its task-specific `RNA_processing` settings JSON and all filtered RNA RDS files for the stage. For each sample, in memory, it performs log-normalization, 2,000-variable-gene selection, scaling, individual PCA, neighbours and sample clustering. `sex_prediction` and `CellXY_db` from step 06 are carried in each sample's metadata; cellXY is not run again. It then adds:
 
 -   `CellCycleScoring`: `S.Score`, `G2M.Score` and `Phase`, using case-insensitive matches of Seurat’s 2019 marker panel to observed mouse symbols. This is symbol matching, not the online gprofiler orthology conversion used in YY\_04b. At least five markers per panel must match. No cell-cycle regression is applied.
--   `cellXY::classifySex(counts, genome = "Mm", qc = FALSE)`: stored as `sex_prediction`. The cells already passed pipeline QC; uncertain predictions remain missing. These are expression-based predictions, not sample sex assignments. cellXY internally converts counts to a dense matrix, so large samples may require substantial RAM.
 -   SCT v2 normalization with 2,000 variable features per sample.
 
 After individual processing it selects shared SCT integration features, prepares SCT residuals, and merges samples. It retains joined log-normalized RNA for marker testing, computes `rna_merged_pca` on SCT features, and creates `rna_unintegrated_clusters` and `rna_unintegrated_umap`. When enabled, SCT CCA `IntegrateLayers` creates `integrated.cca`, followed by `rna_integrated_clusters`, `rna_integrated_umap`, and `PrepSCTFindMarkers`. This implements the YY\_05 merge/integration sequence with explicit dimension settings; see [Seurat CCA integration](https://satijalab.org/seurat/reference/ccaintegration).
 
-Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, and `rna_cell_annotations.tsv` containing per-cell sample, cycle scores/phase and sex prediction. No individual preprocessed RDS files are saved.
+Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, and `rna_cell_annotations.tsv` containing per-cell sample, cycle scores/phase, sex prediction and male-female doublet prediction (`CellXY_db`). No individual preprocessed RDS files are saved.
 
 ### Step 08: individual ATAC preprocessing, then stage merge and integration
 
@@ -628,7 +690,7 @@ Nextflow publishes the following under `<outdir>/<stage>/copy_number/`, using th
 | `.nuclear_reference.bed` | Exact selected nuclear intervals, reusable with `--reference-bed` |
 | `.settings.txt` | Arguments, reference length, both supplied mgatk depth-table paths, blacklist source, mate-overlap policy and R/package versions |
 
-Defaults flag cells below 1,000 nuclear aligned bases or mitochondrial mean depth 10; these are configurable coverage checks, not validated universal cutoffs. Missing mgatk measurements and zero nuclear coverage remain missing estimates. Low-coverage cells retain `mtDNA_CN_normalised_raw` or `mtDNA_CN_normalised_enriched_raw` for inspection. The corresponding normalised estimate is missing unless `qc_status` or `qc_status_enriched` is `pass`. Missing or low mitochondrial coverage in one source does not suppress the other estimate. The previous `mtDNA_copy_estimate` and `mtDNA_copy_estimate_raw` names remain aliases for the ordinary mgatk estimate. Use `--min-nuclear-bases` and `--min-mt-depth` to adjust these checks.
+Defaults flag cells below 1,000 nuclear aligned bases or mitochondrial mean depth 5; these are configurable coverage checks, not validated universal cutoffs. Missing mgatk measurements and zero nuclear coverage remain missing estimates. Low-coverage cells retain `mtDNA_CN_normalised_raw` or `mtDNA_CN_normalised_enriched_raw` for inspection. The corresponding normalised estimate is missing unless `qc_status` or `qc_status_enriched` is `pass`. Missing or low mitochondrial coverage in one source does not suppress the other estimate. The previous `mtDNA_copy_estimate` and `mtDNA_copy_estimate_raw` names remain aliases for the ordinary mgatk estimate. Use `--min-nuclear-bases` and `--min-mt-depth` to adjust these checks.
 
 The script uses the supplied genome-wide mgatk mean depth without applying the notebook’s human mitochondrial length or deletion correction. Verify mitochondrial reference and coverage exclusions in your mgatk run. **Match the nuclear mapping/base-quality thresholds, duplicate handling and mate-overlap conventions to the actual mgatk run.** The script cannot recover those settings from the depth table. Different filters or libraries can distort the coverage ratio. The diploid, equal-sampling assumption can also vary with cell cycle, nuclear copy-number changes, accessibility and mitochondrial recovery; interpret the result as an ATAC-derived estimate and validate absolute copy numbers independently when needed.
 
@@ -711,7 +773,7 @@ python3 tests/settings_cache.py --nextflow /path/to/nextflow
 python3 tests/script_hash.py --nextflow /path/to/nextflow
 ```
 
-The cache check uses real Nextflow with temporary synthetic inputs and mock R outputs; it requires Java 17+ and Python 3. When R is available, it also validates the generated settings with the R reader (`jsonlite` required). It checks which tasks rerun after settings edits, without validating biological calculations. Existing R checks in `tests/` exercise consensus peak unions/width boundaries, QC, DoubletFinder routing, RNA/ATAC integration, WNN, legacy modality combination, adjusted-p-value marker filtering and per-cluster marker files, the step 08 feature assays (stand-in assays carried into both ATAC objects and the WNN object, plus motif-ID-to-TF-name renaming), mgatk metadata and copy-number calculations with synthetic data and documented dependency substitutions.
+The cache check uses real Nextflow with temporary synthetic inputs and mock R outputs; it requires Java 17+ and Python 3. When R is available, it also validates the generated settings with the R reader (`jsonlite` required). It checks which tasks rerun after settings edits, without validating biological calculations. Existing R checks in `tests/` exercise consensus peak unions/width boundaries, QC, DoubletFinder routing, RNA/ATAC integration, WNN, legacy modality combination, adjusted-p-value marker filtering and per-cluster marker files, the step 08 feature assays (stand-in assays carried into both ATAC objects and the WNN object, plus motif-ID-to-TF-name renaming), cellXY male-female doublet removal in step 06 with `remove_mf_doublets` on and off, cell-cycle scoring in step 07 with cellXY columns carried from step 06, mgatk metadata and copy-number calculations with synthetic data and documented dependency substitutions.
 
 ## Run time and CPU use
 
@@ -772,7 +834,7 @@ Each step was checked against the official tutorial source for the package versi
 | 11–12 WNN | Seurat [WNN](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/weighted_nearest_neighbor_analysis.Rmd), Signac [10x multiome](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_multiomic.Rmd) | Follows | `FindMultiModalNeighbors`, UMAP on `weighted.nn`, `FindClusters(graph.name = "wsnn", algorithm = 3)`. Dims `1:20`/`2:40` are configurable (tutorials use `1:50` with `2:50` or `2:40`) |
 | 13 Metadata | None | Pipeline bookkeeping | Attaches step 09 and 10 tables by cell |
 | 14 Markers | Seurat [PBMC 3k](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/pbmc3k_tutorial.Rmd) | Follows | `FindAllMarkers(only.pos = TRUE)` with `min.pct = 0.1` and `logfc.threshold = 0.25`, stricter than the Seurat 5 defaults (0.01 and 0.1), then adjusted p < 0.05 |
-| Sex prediction (07) | [cellXY README](https://github.com/phipsonlab/cellXY) | Follows | `classifySex(counts, genome = "Mm")`; `qc = FALSE` because cells have already passed pipeline QC (the README default is `TRUE`) |
+| Sex and male-female doublet prediction (06) | [cellXY README](https://github.com/phipsonlab/cellXY) | Follows | `classifySex(counts, genome = "Mm")` and `findMfDoublet(counts, genome = "Mm")` (its default `qc = FALSE`); `qc = FALSE` because cells have already passed pipeline QC (the README default is `TRUE`) |
 
 To use Signac's heteroplasmy definition instead, change the denominator in `allele_fraction()` in `scripts/09_mgatk_metrics.R` from reference + alternate reads to `Depth_<position>`. With few non-reference, non-alternate reads at these sites, the two definitions give nearly identical values.
 
@@ -789,7 +851,7 @@ Run Cell Ranger ARC and mgatk on a matching human reference (mgatk with chromoso
 | `scripts/01_peaks.R` | MACS effective genome size; standard chromosomes; peak blacklist | `1.87e9` → `2.7e9`; `species = "Mus musculus"` → `"Homo sapiens"`; `Signac::blacklist_mm10` → `Signac::blacklist_hg38_unified` |
 | `scripts/00_common.R`, `annotation_mm10()` | Gene annotation for TSS enrichment, gene activity and ATAC objects | `EnsDb.Mmusculus.v79` → `EnsDb.Hsapiens.v86`; `genome = "mm10"` → `"hg38"` (also in `make_assays()`) |
 | `scripts/00_common.R`, `make_assays()` | Ribosomal gene pattern (the mitochondrial pattern `^[Mm][Tt]-` already matches human `MT-`) | `^Rp[ls]` → `^RP[SL]` |
-| `scripts/00_common.R`, `annotate_sample_rna()` | Sex prediction genome | `cellXY::classifySex(..., genome = "Mm")` → `genome = "Hs"` |
+| `scripts/00_common.R`, `annotate_cellxy()` | Sex and male-female doublet prediction genome | `cellXY::classifySex(..., genome = "Mm")` and `cellXY::findMfDoublet(..., genome = "Mm")` → `genome = "Hs"` |
 | `scripts/00_common.R`, `score_sample_cell_cycle()` | Cell-cycle genes: Seurat's `cc.genes.updated.2019` list uses human symbols (`MCM5`, `PCNA`, …) and is matched ignoring case, so all 43 S and 54 G2M genes match human data unchanged; only the "mouse gene symbols" error message needs updating | none |
 | `scripts/00_common.R`, `add_atac_feature_assays()` | Genome for motif matching and chromVAR | `BSgenome.Mmusculus.UCSC.mm10` → `BSgenome.Hsapiens.UCSC.hg38` (install it in the environment). The JASPAR2020 CORE vertebrate motifs can stay: 630 of the 746 are human-derived. For human-only motifs, replace `tax_group = "vertebrates"` with `species = 9606` (633 motifs) |
 | `scripts/10_estimate_mtdna_copy_number.R` | Autosomes used for the nuclear reference, and the default blacklist | `^chr([1-9]\|1[0-9])$` (chr1–19) → `^chr([1-9]\|1[0-9]\|2[0-2])$` (chr1–22), in `select_reference()` and the reference-BED check; `blacklist_mm10` → `blacklist_hg38_unified`, or set `copy_number.blacklist` to a hg38 BED |
@@ -808,3 +870,53 @@ Variant positions and pooling live in `scripts/09_mgatk_metrics.R`:
 5. **Tests and documentation.** Update the site list in `tests/mgatk_metrics.R` and the Step 09 tables and formulas in this README.
 
 For human variants, positions refer to the human mtDNA (rCRS/hg38 `chrM`); the reference-allele check confirms that mgatk used the expected sequence.
+
+## Planned option: running with containers
+
+The workflow currently runs with Conda (`-profile conda` or `-profile slurm,conda`). A container option would make it portable to other clusters. It is not implemented yet; this section records the plan and the cluster constraints found so far.
+
+### Cluster constraint
+
+Running Singularity as an ordinary user requires either a setuid installation or Linux user namespaces. The `singularity/3.8.6` module is a Conda installation without setuid, so it needs user namespaces:
+
+| Node | `cat /proc/sys/user/max_user_namespaces` | `singularity exec docker://alpine:3.19 …` |
+| --- | --- | --- |
+| sledge01 | 15000 | Works |
+| sledge02, sledge03, sledge04, sledge14, lambda | 0 | Fails: `Failed to create user namespace: user namespace disabled` |
+
+Other nodes have not been tested. To test a node:
+
+```bash
+srun -w <node> -t 5 --mem 2G --pty bash
+module add singularity/3.8.6
+cat /proc/sys/user/max_user_namespaces        # 0 means containers cannot run
+export SINGULARITY_TMPDIR=/tmp                # local disk; network storage fails during image clean-up
+singularity exec docker://alpine:3.19 head -2 /etc/os-release
+```
+
+Until the HPC administrators enable user namespaces or a setuid Singularity/Apptainer on more nodes, container jobs would have to run on `sledge01` only, so Conda remains the practical choice on this cluster.
+
+### Implementation plan
+
+1. **Build one image** with the same software as the `stage_multiome` environment: R 4.3, Seurat 5.3.0, Signac 1.14.0, DoubletFinder 2.0.4, cellXY, SCP, glmGamPoi, Rsamtools, EnsDb.Mmusculus.v79, BSgenome.Mmusculus.UCSC.mm10, JASPAR2020, TFBSTools, chromVAR, motifmatchr and MACS3. Use a `containers/Dockerfile` (or Singularity `.def`) based on `micromamba`: install the Conda packages from `environment.yml`, then the R-installed packages listed in its first line, all with pinned versions. Build on a machine with Docker (building needs root or user namespaces), push to a registry, and pull once on the cluster with `singularity pull stage_multiome.sif docker://…` into a shared folder. Expect an image of roughly 5–8 GB, mostly from the mm10 genome package.
+2. **Add a `singularity` profile to `nextflow.config`**, alongside `conda`:
+   ```groovy
+   params.container = null            // path to the .sif, or a docker:// address
+   singularity {                      // use: -profile slurm,singularity
+     singularity.enabled    = true
+     singularity.autoMounts = true
+     singularity.runOptions = '-B /suffolk -B /nfs4'
+     process.container      = params.container
+   }
+   ```
+   The bind mounts are required: the R scripts read ARC, mgatk and fragment files at their original absolute paths and run scripts from the pipeline folder. Do not combine the `singularity` and `conda` profiles.
+3. **Relax host checks in `main.nf`.** The workflow requires `macs3_path` to be an executable on the host and checks `conda_env`. In container mode, MACS3 is inside the image, so `macs3_path` should default to `macs3` on the container's `PATH`, and both host checks should be skipped.
+4. **Cluster settings in your copy of `site.config`:** send jobs to nodes that allow containers (currently `process.clusterOptions = '--nodelist=sledge01'`), make Singularity available in each job (for example by adding `module add singularity/3.8.6` to the existing `beforeScript`), keep `SINGULARITY_TMPDIR` on local disk (`/tmp`) and the image cache (`NXF_SINGULARITY_CACHEDIR`) on shared storage.
+5. **Validate** by running `tests/*.R` inside the image (`singularity exec stage_multiome.sif Rscript tests/…`), then running the vignette's three test samples with both `-profile slurm,conda` and `-profile slurm,singularity` and comparing the outputs (for example `wnn_mgatk.rds` metadata and the heteroplasmy and depth tables). Differences point to package versions that do not match.
+6. **Document** the profile, image location and pull command in this README.
+
+### Considerations
+
+- Switching between Conda and the container reruns every task once, because the software environment is part of each task's fingerprint for `-resume`.
+- Steps 2–4 and 6 are small (about 20 lines of configuration and code plus documentation). Most of the effort and risk is in step 1: reproducing the exact package versions, especially the packages installed from R rather than Conda.
+- While only `sledge01` allows containers, all container jobs queue for one node and large runs will be slow. The benefit is a portable workflow that produces identical results on other clusters.
