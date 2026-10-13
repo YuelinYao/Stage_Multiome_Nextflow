@@ -2,6 +2,38 @@
 
 This Nextflow workflow analyses mouse single-cell multiome data (RNA + ATAC, mm10), one developmental stage at a time. It performs comprehensive QC and preprocessing, integrates the RNA and ATAC modalities across samples, calculates mtDNA heteroplasmy and copy number for each cell, and identifies marker genes for each WNN cluster to support cell-type annotation.
 
+## Contents
+
+- [Requirements and inputs](#requirements-and-inputs)
+  - [1. Software and packages](#1-software-and-packages)
+  - [2. Input files](#2-input-files)
+- [Overview of the pipeline](#overview-of-the-pipeline)
+- [Pipeline settings JSON](#pipeline-settings-json)
+  - [Run parameters](#run-parameters)
+  - [Analysis parameters](#analysis-parameters)
+- [Output files and directory structure](#output-files-and-directory-structure)
+- [Vignette: example test run](#vignette-example-test-run)
+  - [Phase 1: review](#phase-1-review)
+  - [Phase 2: cluster review](#phase-2-cluster-review)
+  - [Phase 3: analysis](#phase-3-analysis)
+- [Details for each step](#details-for-each-step)
+- [Resuming after JSON edits](#resuming-after-json-edits)
+- [Workflow files and execution](#workflow-files-and-execution)
+  - [Repository layout](#repository-layout)
+  - [How settings reach each task](#how-settings-reach-each-task)
+  - [Tests](#tests)
+- [Run time and CPU use](#run-time-and-cpu-use)
+  - [CPU use by step](#cpu-use-by-step)
+  - [Estimated run time](#estimated-run-time)
+- [Comparison with official tutorials](#comparison-with-official-tutorials)
+- [Adapting the pipeline to other species or mtDNA variants](#adapting-the-pipeline-to-other-species-or-mtdna-variants)
+  - [Human data (GRCh38/hg38)](#human-data-grch38hg38)
+  - [Other mtDNA variants](#other-mtdna-variants)
+- [Planned option: running with containers](#planned-option-running-with-containers)
+  - [Cluster constraint](#cluster-constraint)
+  - [Implementation plan](#implementation-plan)
+  - [Considerations](#considerations)
+
 ## Requirements and inputs
 
 ### 1\. Software and packages
