@@ -1,6 +1,6 @@
 # Exercise the actual 07 script, including SCT and CCA integration, with
-# synthetic RNA counts. Only cell-cycle/sex annotation is stubbed because
-# cellXY is unavailable locally. Run from the repository root.
+# synthetic RNA counts. Only cell-cycle scoring is stubbed; cellXY runs in
+# step 06, not here. Run from the repository root.
 suppressPackageStartupMessages(library(Seurat))
 env <- new.env(parent = globalenv())
 for (expr in parse('scripts/00_common.R'))
