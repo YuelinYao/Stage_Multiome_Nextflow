@@ -390,6 +390,10 @@ NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflo
   --phase review \
   -profile slurm,conda -c site.config
 ```
+
+![Review phase](figures/review.png)
+
+Expected output: all 8 tasks (steps 01–04) completed in about 35 min.
 Inspect `<outdir>/E8.5/qc/review/` and adjust `thresholds` in `pipeline_settings.example.json` if needed. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
 
 ### Phase 2: cluster review
@@ -402,6 +406,10 @@ NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflo
   --phase cluster_review \
   -profile slurm,conda -c site.config -resume
 ```
+
+![Cluster review phase](figures/cluster_review.png)
+
+Expected output: steps 01–04 reused from the review run (`cached`); only the 3 step 05 tasks ran, in about 14 min.
 Then inspect `<outdir>/E8.5/qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. If QC thresholds, `review_QC_cluster` settings, input data, seeds or package versions change, rerun cluster review because cluster IDs may change.
 
 ### Phase 3: analysis
@@ -415,6 +423,10 @@ NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflo
   --phase analysis \
   -profile slurm,conda -c site.config -resume
 ```
+
+![Analysis phase](figures/analysis.png)
+
+Expected output: steps 01–04 reused; the 14 analysis tasks (steps 06–14) ran in about 1 h 29 min.
 The final object is `<outdir>/E8.5/objects/wnn_mgatk.rds`; DEGs for cell-type annotation are in `<outdir>/E8.5/deg`; run times and resource use are in `<outdir>/E8.5/reports/`. 
 
 Do not change the QC `thresholds`, `sample_overrides` or `review_QC_cluster` settings between cluster review and analysis. If you need different QC settings, rerun `--phase cluster_review`, inspect the new clusters (their IDs may change), update `doublet.exclude_clusters`, then run analysis.
