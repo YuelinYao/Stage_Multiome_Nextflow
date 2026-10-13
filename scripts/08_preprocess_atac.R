@@ -34,6 +34,9 @@ required_lsi <- if (!is.null(cfg$component_count)) cfg$component_count else
 if (min(ncol(obj), length(VariableFeatures(obj))) <= required_lsi)
   stop_bad("Need more than ", required_lsi, " cells and variable peaks for LSI")
 obj <- RunSVD(obj, n = required_lsi, verbose = FALSE)
+# Add chromvar, chromvar_rename and gene.activities assays; both saved objects keep them.
+# OMP_NUM_THREADS is set to this task's cpus by nextflow.config.
+obj <- add_atac_feature_assays(obj, cpus = max(1L, as.integer(Sys.getenv("OMP_NUM_THREADS", "1"))))
 obj <- cluster_qc_reduction(obj, "lsi", settings$ATAC_dims,
   settings$ATAC_dims, "atac_unintegrated", settings)
 saveRDS(obj, "atac_unintegrated.rds")

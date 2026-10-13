@@ -55,6 +55,18 @@ run_checks <- function() {
                   u = decomposition$u[, seq_len(n), drop = FALSE]))
     object
   }
+  # Motif/gene-activity assays need real peaks, fragments and BSgenome; add stand-in
+  # assays here and check that both saved objects keep them.
+  feature_calls <- 0L
+  env$add_atac_feature_assays <- function(obj, cpus) {
+    stopifnot(cpus >= 1L); feature_calls <<- feature_calls + 1L
+    fake <- matrix(1, 3, ncol(obj), dimnames = list(c('MA1', 'MA2', 'MA3'), colnames(obj)))
+    obj[['chromvar']] <- CreateAssayObject(data = fake)
+    obj[['chromvar_rename']] <- CreateAssayObject(data = fake)
+    obj[['gene.activities']] <- CreateAssayObject(counts = fake)
+    obj
+  }
+  feature_assays <- c('chromvar', 'chromvar_rename', 'gene.activities')
   env$args <- c(config, files)
   setwd(task_dir)
   expressions <- parse(script)[-(1:2)]
@@ -67,7 +79,10 @@ run_checks <- function() {
             result@misc$atac_integration_k_weight < 59,
             identical(rownames(result[['ATAC']]), features),
             all(c('atac_unintegrated_umap', 'atac_integrated_umap') %in% Reductions(result)),
-            file.exists('atac_integrated.rds'), !file.exists('atac_stage.rds'))
+            file.exists('atac_integrated.rds'), !file.exists('atac_stage.rds'),
+            feature_calls == 1L, all(feature_assays %in% Assays(result)),
+            all(feature_assays %in% Assays(readRDS('atac_unintegrated.rds'))),
+            DefaultAssay(result) == 'ATAC')
   original_counts <- do.call(cbind, lapply(files, function(file)
     GetAssayData(readRDS(file), assay = 'ATAC', layer = 'counts')))
   stopifnot(identical(GetAssayData(result, assay = 'ATAC', layer = 'counts'), original_counts))
@@ -85,4 +100,11 @@ run_checks <- function() {
             !file.exists('atac_integrated.rds'), !file.exists('atac_stage.rds'))
 }
 run_checks()
+# chromVAR rows are renamed from motif ID to TF name; repeated names become unique.
+deviations <- matrix(1:6, 3, 2, dimnames = list(c('MA1', 'MA2', 'MA3'), c('c1', 'c2')))
+renamed <- env$rename_motif_rows(deviations, list(MA1 = 'Ctcf', MA2 = 'Foxa1', MA3 = 'Ctcf'))
+stopifnot(identical(rownames(renamed), c('Ctcf', 'Foxa1', 'Ctcf.1')),
+          identical(unname(renamed), unname(deviations)),
+          inherits(tryCatch(env$rename_motif_rows(deviations, list(MA1 = 'Ctcf')),
+                            error = identity), 'error'))
 cat('All ATAC stage/integration checks passed.\n')

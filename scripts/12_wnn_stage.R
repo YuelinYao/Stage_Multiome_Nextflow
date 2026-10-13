@@ -15,6 +15,9 @@ if (is.null(obj$barcode) || is.null(atac$barcode) ||
     !identical(as.character(obj$barcode), as.character(atac$barcode)))
   stop_bad("Stage RNA/ATAC original barcodes differ or are missing")
 obj[["ATAC"]] <- atac[["ATAC"]]
+# Keep the stage ATAC feature assays from step 08 in the WNN object.
+for (assay in intersect(c("gene.activities", "chromvar", "chromvar_rename"), Assays(atac)))
+  obj[[assay]] <- atac[[assay]]
 for (key in c("nCount_ATAC", "nFeature_ATAC", "nucleosome_signal", "TSS.enrichment"))
   obj[[key]] <- atac[[key]][colnames(obj), 1, drop = TRUE]
 for (reduction in Reductions(atac)) obj[[reduction]] <- atac[[reduction]]

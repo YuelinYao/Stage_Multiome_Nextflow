@@ -1,4 +1,4 @@
-# Additional required R packages in the shared environment: DoubletFinder, cellXY and SCP.
+# Additional required R packages in the shared environment (installed from R, not conda): DoubletFinder, cellXY, SCP, and for step 08 motif assays JASPAR2020 0.99.10, TFBSTools 1.40.0, chromVAR 1.24.0 and motifmatchr 1.24.0.
 name: stage_multiome
 channels:
   - ccbbucsd

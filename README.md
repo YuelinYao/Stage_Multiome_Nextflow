@@ -40,7 +40,7 @@ Use these existing environments when running this project:
 
 Enable the Conda profile with `-profile conda` for local execution or `-profile slurm,conda` for Slurm. Nextflow uses the R environment above for each task and calls MACS3 through its explicit executable path. Both paths must be accessible on every execution node. [site.config](site.config) is the only place where each process's CPUs, memory and time limit are set (`main.nf` contains none), so always pass it, or your copy of it, with `-c`; without it, tasks get Nextflow's defaults of one CPU and no memory request. Queue/account settings can be added there when required by your cluster.
 
-Package versions for the existing `stage_multiome` Conda environment are recorded in [environment.yml](environment.yml). This is an exported Linux environment, including its dependencies and installation prefix.
+Package versions for the existing `stage_multiome` Conda environment are recorded in [environment.yml](environment.yml). This is an exported Linux environment, including its dependencies and installation prefix. Packages installed from R rather than conda (DoubletFinder, cellXY, SCP, and JASPAR2020, TFBSTools, chromVAR and motifmatchr for the step 08 motif assays) are listed with their versions in its first line.
 
 ### 2\. Input files
 
@@ -62,7 +62,7 @@ Use absolute paths that all execution nodes can read:
 | Column | Required content |
 | --- | --- |
 | `arc_out` | Cell Ranger ARC `outs` directory containing `filtered_feature_bc_matrix.h5`, `atac_fragments.tsv.gz` and its `.tbi` index; analysis also requires `summary.csv` for detected-cell reporting and `atac_possorted_bam.bam` for step 10; `per_barcode_metrics.csv` supplies barcode translation when present |
-| `mgatk_enriched_dir` | Required mgatk output used for step 09 heteroplasmy/depth metrics, readable by `Signac::ReadMGATK`, usually the `final` directory |
+| `mgatk_enriched_dir` | Required mgatk output used for step 09 heteroplasmy/depth metrics, readable by `Signac::ReadMGATK`, usually the `final` directory. Hidden macOS metadata files (names starting with `._`, created when copying from a Mac) are ignored in both mgatk folders |
 | `mgatk_dir` | Ordinary mgatk output used automatically by step 10 for `mtDNA_CN_normalised`; may be blank, in which case this estimate remains `NA` |
 
 Gene symbols, the reference genome and barcodes are requirements for the existing data, not additional files or CSV columns:
@@ -81,7 +81,7 @@ The workflow analyses one developmental stage at a time and is run three times f
 | --- | --- | --- | --- |
 | 1\. `review` | 01–04 | 01: call ATAC peaks per sample<br>02: merge them into one common peak set for the stage<br>03: calculate eight RNA/ATAC QC metrics per cell<br>04: summarise the metrics (MAD-based candidate bounds, violin plots)<br>No cells are removed. | Inspect `<outdir>/<stage>/qc/review/`, then set the QC `thresholds` (and any `sample_overrides`) in the JSON. |
 | 2\. `cluster_review` | 05 | 05: apply your QC thresholds to each sample, cluster the QC-passing cells on RNA, and write per-cluster QC summaries, violin plots and marker genes<br>No cells are removed. | Inspect `<outdir>/<stage>/qc/cluster_review/`, then list low-quality cluster IDs per sample in `doublet.exclude_clusters`. |
-| 3\. `analysis` | 06–14 | 06: remove QC-failing cells and the excluded clusters, then remove doublets with DoubletFinder<br>07–08: preprocess RNA and ATAC per sample, then merge and integrate each modality across samples<br>09–10: measure 5019/5024 heteroplasmy and mtDNA copy number per cell<br>11–12: combine RNA and ATAC and build WNN clusters<br>13: attach the mitochondrial measurements to the WNN object<br>14: find RNA markers for each WNN cluster | Use `<outdir>/<stage>/objects/wnn_mgatk.rds` and the other published results. |
+| 3\. `analysis` | 06–14 | 06: remove QC-failing cells and the excluded clusters, then remove doublets with DoubletFinder<br>07–08: preprocess RNA and ATAC per sample, then merge and integrate each modality across samples; add ATAC gene activity and chromVAR motif assays<br>09–10: measure 5019/5024 heteroplasmy and mtDNA copy number per cell<br>11–12: combine RNA and ATAC and build WNN clusters<br>13: attach the mitochondrial measurements to the WNN object<br>14: find RNA markers for each WNN cluster | Use `<outdir>/<stage>/objects/wnn_mgatk.rds` and the other published results. |
 
 ```mermaid
 flowchart TD
@@ -365,7 +365,9 @@ stage_results/
     │   ├── wnn_mgatk.rds
     │   └── all_cells_mtDNA.tsv
     ├── deg/
-    │   └── cluster_markers.tsv
+    │   ├── cluster_markers.tsv
+    │   └── per_cluster/
+    │       └── cluster_<id>_markers.tsv   # one per WNN cluster
     ├── reports/                       # one set per phase: review, cluster_review, analysis
     │   ├── execution_report_<phase>.html
     │   ├── execution_timeline_<phase>.html
@@ -386,12 +388,13 @@ stage_results/
 | `copy_number/` | Step 10 per-cell estimates, selected nuclear BED and settings/provenance for each sample |
 | `objects/rna_*.rds`, `objects/atac_*.rds` | Stage Seurat objects before/after integration; WNN reads the integrated file when its integration switch is enabled, otherwise the unintegrated file |
 | `objects/rna_cell_annotations.tsv` | Per-cell sample ID, cell-cycle scores/phase and sex prediction |
-| `objects/wnn.rds` | Combined RNA/ATAC object with modality reductions, WNN UMAP, modality weights and WNN clusters |
+| `objects/wnn.rds` | Combined RNA/ATAC object with modality reductions, WNN UMAP, modality weights and WNN clusters, plus the `chromvar`, `chromvar_rename` and `gene.activities` assays |
 | `objects/wnn_mgatk.rds` | Final combined object, including heteroplasmy and copy-number estimates in cell metadata; use this for further analysis |
 | `objects/all_cells_mtDNA.tsv` | All samples’ mitochondrial measurements, ordered to match the final WNN object’s cells |
 | `plots/wnn_clusters_umap.pdf` | WNN UMAPs coloured by `sample_id` and labelled `wsnn_clusters` |
 | `plots/Cell_lineage_umap.pdf` | Blended normalized lineage-marker expression on the WNN UMAP |
 | `deg/cluster_markers.tsv` | Positive RNA markers for WNN clusters, filtered to finite adjusted p-values below 0.05 |
+| `deg/per_cluster/cluster_<id>_markers.tsv` | The same markers split into one file per WNN cluster; header-only when a cluster has no significant markers |
 
 The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `copy_number/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled. Each distinct RNA/ATAC analysis object is saved once; WNN uses `rna_integrated.rds` or `rna_unintegrated.rds` and `atac_integrated.rds` or `atac_unintegrated.rds` according to those switches.
 
@@ -509,7 +512,17 @@ Published outputs: `rna_unintegrated.rds`, optional `rna_integrated.rds`, and `r
 
 When enabled, `FindIntegrationAnchors(reduction = "rlsi")` and `IntegrateEmbeddings` create `integrated_lsi`, followed by `atac_integrated_clusters` and `atac_integrated_umap`. ATAC integration uses a weighting neighbourhood capped at 100 and further limited by the smallest sample size and the distinct anchor cells in each sample pair; the chosen value is logged and stored as `misc$atac_integration_k_weight`. This follows YY\_06 and the [Signac ATAC integration workflow](https://stuartlab.org/signac/articles/integrate_atac.html).
 
-Published outputs: `atac_unintegrated.rds` and optional `atac_integrated.rds`. No individual preprocessed RDS files are saved. Compare integrated and unintegrated results because integration can reduce sample-associated biological variation.
+After the stage TF-IDF/LSI, step 08 adds three assays to the merged ATAC object, following the official Signac 1.14.0 tutorials that match the installed Signac version: [motif analysis](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/motif_vignette.Rmd) (`getMatrixSet`, `AddMotifs`, `RunChromVAR`) and the [PBMC gene activity section](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_vignette.Rmd) (`GeneActivity`, `NormalizeData`). The current [Signac website](https://stuartlab.org/signac/articles/motif_vignette) no longer shows the chromVAR step. Parallel chromVAR follows the [chromVAR multiprocessing advice](https://greenleaflab.github.io/chromVAR/articles/Introduction.html) (`BiocParallel::register`). These run on the merged object, independently of integration, so both saved objects contain them:
+
+| Assay | Content |
+| --- | --- |
+| `chromvar` | chromVAR motif deviation z-scores per cell. Motifs are the JASPAR2020 CORE vertebrate matrices (latest version of each), matched to the stage peaks on `BSgenome.Mmusculus.UCSC.mm10` with `AddMotifs`; rows are JASPAR IDs such as `MA0139.1` |
+| `chromvar_rename` | The same values with rows renamed to TF names (for example `MA0139.1` → `CTCF`), using the motif names stored by `AddMotifs`, the same lookup as Signac's `ConvertMotifID()`; repeated TF names get a suffix (`.1`, `.2`). Not part of the tutorial; a convenience for plotting by TF name |
+| `gene.activities` | Signac `GeneActivity` counts: ATAC fragments over each protein-coding gene body plus 2 kb upstream, log-normalised with the median total count per cell as scale factor |
+
+chromVAR uses the CPUs set for `MERGE_INTEGRATE_ATAC` in `site.config`, and a fixed seed for its random background peaks. Motif matching and gene activity read the original fragment files, so they add noticeably to this step's run time.
+
+Published outputs: `atac_unintegrated.rds` and optional `atac_integrated.rds`, both including the three assays above. No individual preprocessed RDS files are saved. Compare integrated and unintegrated results because integration can reduce sample-associated biological variation.
 
 ### Step 09: read precomputed mgatk results per sample
 
@@ -529,6 +542,25 @@ Published outputs: `atac_unintegrated.rds` and optional `atac_integrated.rds`. N
 | 16232 | A → T |
 
 Output: `STAGE/mgatk/<sample>.mtDNA.tsv`. For each position, `Depth_<position>` sums all four bases on both strands; `Informative_depth_<position>` includes only reference and alternate reads. `Heteroplasmy_<position>` is alternate / (reference + alternate), and is missing when that denominator is zero. The table includes all eight base/strand counts, strand-specific fractions, and `Heteroplasmy_<position>_covered`, which requires at least 10 informative reads. Reference and mutant counts are named `Allele_ref_<position>` and `Allele_mut_<position>` in the combined table.
+
+**Heteroplasmy at m.5019 (A → G).** For each cell, mgatk's counts for each base at position 5019 are added across both strands (for example `G_5019 = G_5019_fwd + G_5019_rev`). The alternate allele G marks 5019-mutant mtDNA and the reference allele A marks wild-type mtDNA; reads showing C or T at 5019 count towards `Depth_5019` but not towards the fraction.
+
+```text
+Heteroplasmy_5019         = G_5019 / (A_5019 + G_5019)
+Heteroplasmy_5019_covered = the same value, kept only when A_5019 + G_5019 >= 10
+Heteroplasmy_5019_fwd/rev = the same fraction using forward-strand or reverse-strand reads only
+```
+
+`Heteroplasmy_5019` is `NA` when the cell has no A or G reads at 5019, or no mgatk data at all; it is never set to 0 for missing coverage. Comparing `_fwd` and `_rev` helps spot strand-specific artefacts.
+
+Because one site gives few reads per cell, 5019 heteroplasmy is also estimated from three sites assumed to mark the same mutant haplotype, adding counts before dividing:
+
+```text
+Pooled mutant count       = G_5019 + G_15200 + T_16232
+Pooled WT count           = A_5019 + A_15200 + A_16232
+Heteroplasmy_all_5019     = pooled mutant / (pooled mutant + pooled WT)
+Heteroplasmy_all_5019_covered = the same value, kept only when pooled mutant + pooled WT >= 25
+```
 
 `Heteroplasmy_all_5019` pools reference and alternate counts across 5019, 15200 and 16232 before dividing, rather than averaging site fractions. The pooled columns follow the same naming: `Depth_all_5019`, `Informative_depth_all_5019`, `Allele_ref_all_5019`, `Allele_mut_all_5019` and `Heteroplasmy_all_5019_covered`, which requires at least 25 **informative** reads. This differs from the supplied script’s total-depth cutoff, so other-base calls cannot satisfy the coverage requirement. Pooling assumes these sites tag the intended 5019 haplotype; these measurements do not establish linkage or phase. The same metrics are calculated for mutant and WT samples without inferring genotype from sample names.
 
@@ -604,7 +636,7 @@ Run `Rscript tests/mtdna_copy_number.R` for synthetic CIGAR, base-quality, dupli
 
 ### Step 11–12: combine modalities and build WNN
 
-`12_wnn_stage.R` aligns the stage RNA and ATAC cells, verifies their sample assignments, and attaches ATAC assays, QC metadata, reductions and modality cluster labels to the RNA object. It uses `integrated.cca` and `integrated_lsi` when their switches are enabled, or `rna_merged_pca` and `lsi` otherwise. It preserves stage modality UMAPs and cycle/sex metadata.
+`12_wnn_stage.R` aligns the stage RNA and ATAC cells, verifies their sample assignments, and attaches the ATAC assay, the step 08 `chromvar`, `chromvar_rename` and `gene.activities` assays, QC metadata, reductions and modality cluster labels to the RNA object. It uses `integrated.cca` and `integrated_lsi` when their switches are enabled, or `rna_merged_pca` and `lsi` otherwise. It preserves stage modality UMAPs and cycle/sex metadata.
 
 `FindMultiModalNeighbors` uses `WNN.RNA_dims` and `WNN.ATAC_dims`, storing modality weights. WNN UMAP uses the weighted neighbour graph; clusters use the `wsnn` graph and `WNN.algorithm`/`WNN.resolution`. Selected reductions are recorded in `obj@misc$wnn_reductions`.
 
@@ -642,7 +674,7 @@ Outputs: `STAGE/objects/wnn_mgatk.rds` and `all_cells_mtDNA.tsv`.
 
 `14_cluster_markers.R` reads step 12’s `wnn.rds` directly, joins RNA layers, uses `wsnn_clusters` as identities, and calls `FindAllMarkers` on the RNA assay. It starts after WNN completes, independently of step 13’s mitochondrial metadata attachment. It compares each cluster with all other cells using Wilcoxon tests, `only.pos = TRUE`, `min.pct = 0.1` and `logfc.threshold = 0.25`. The output retains only rows with finite `p_val_adj < 0.05`. A single cluster or no significant markers produces a header-only TSV that remains readable.
 
-Output: `STAGE/deg/cluster_markers.tsv`. These are positive RNA cluster markers; this step does not perform ATAC differential accessibility, sample-level pseudobulk tests or Hi/Lo comparisons. Cell-level p-values do not establish embryo-level differential expression.
+Outputs: `STAGE/deg/cluster_markers.tsv` with all clusters, and `STAGE/deg/per_cluster/cluster_<id>_markers.tsv` with the same rows split by WNN cluster. Every cluster gets a file; a cluster without significant markers gets a header-only file. These are positive RNA cluster markers; this step does not perform ATAC differential accessibility, sample-level pseudobulk tests or Hi/Lo comparisons. Cell-level p-values do not establish embryo-level differential expression.
 
 ## Resuming after JSON edits
 
@@ -679,7 +711,7 @@ python3 tests/settings_cache.py --nextflow /path/to/nextflow
 python3 tests/script_hash.py --nextflow /path/to/nextflow
 ```
 
-The cache check uses real Nextflow with temporary synthetic inputs and mock R outputs; it requires Java 17+ and Python 3. When R is available, it also validates the generated settings with the R reader (`jsonlite` required). It checks which tasks rerun after settings edits, without validating biological calculations. Existing R checks in `tests/` exercise consensus peak unions/width boundaries, QC, DoubletFinder routing, RNA/ATAC integration, WNN, legacy modality combination, adjusted-p-value marker filtering, mgatk metadata and copy-number calculations with synthetic data and documented dependency substitutions.
+The cache check uses real Nextflow with temporary synthetic inputs and mock R outputs; it requires Java 17+ and Python 3. When R is available, it also validates the generated settings with the R reader (`jsonlite` required). It checks which tasks rerun after settings edits, without validating biological calculations. Existing R checks in `tests/` exercise consensus peak unions/width boundaries, QC, DoubletFinder routing, RNA/ATAC integration, WNN, legacy modality combination, adjusted-p-value marker filtering and per-cluster marker files, the step 08 feature assays (stand-in assays carried into both ATAC objects and the WNN object, plus motif-ID-to-TF-name renaming), mgatk metadata and copy-number calculations with synthetic data and documented dependency substitutions.
 
 ## Run time and CPU use
 
@@ -696,7 +728,7 @@ The cache check uses real Nextflow with temporary synthetic inputs and mock R ou
 | 05 | `PRE_DOUBLET_REVIEW` | 4 | A little: PCA |
 | 06 | `QC_FILTER_DOUBLET` | 4 | Some: PCA; UMAP and the DoubletFinder pK sweep use one core |
 | 07 | `MERGE_INTEGRATE_RNA` | 8 | Some: PCA and CCA integration |
-| 08 | `MERGE_INTEGRATE_ATAC` | 8 | Some: SVD/LSI |
+| 08 | `MERGE_INTEGRATE_ATAC` | 8 | Yes: chromVAR uses all its CPUs; SVD/LSI uses multithreaded maths |
 | 09 | `MGATK_METRICS` | 1 | No |
 | 10 | `MTDNA_COPY_NUMBER` | 1 | No: the BAM scan is single-threaded |
 | 11–12 | `WNN_STAGE` | 2 | Little: WNN neighbours and UMAP run on one core |
@@ -719,4 +751,60 @@ Step 10 (mtDNA copy number) is usually the longest per-sample step: it reads the
 
 Smaller libraries scale roughly with BAM size; the 007 E8.5 BAMs (21–47 GB) take about 1–2 h each. Reading from shared storage can be slower. Step 10 starts as soon as its sample finishes step 06 and runs alongside steps 07–09. The time limits in [site.config](site.config) are generous starting values, not measured run times.
 
+Step 08 (ATAC) also runs motif matching, chromVAR and gene activity. On 300 cells of `5024_Hi_2` these took about 12 min with 4 CPUs; motif matching is a fixed cost for all peaks, while chromVAR and gene activity grow with the number of cells, so expect this step to take a few hours for a whole stage.
+
 For actual times of every task, open `<outdir>/<stage>/reports/execution_report_<phase>.html`, or read the `realtime`, `peak_rss` and `%cpu` columns of `reports/execution_trace_<phase>.txt`. Use these to tune `time`, `memory` and `cpus` in `site.config` for later stages.
+
+## Comparison with official tutorials
+
+Each step was checked against the official tutorial source for the package versions in the `stage_multiome` environment: Signac 1.14.0, Seurat 5.3.0, DoubletFinder 2.0.4 and cellXY 0.99.0. The scripts follow these tutorials; differences are configurable values or deliberate choices, listed below.
+
+| Step | Official tutorial | Verdict | Differences |
+| --- | --- | --- | --- |
+| 01 Peaks | Signac [Calling peaks](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/peak_calling.Rmd), [10x multiome](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_multiomic.Rmd) | Follows | `CallPeaks` → `keepStandardChromosomes(pruning.mode = "coarse")` → remove blacklist peaks. All filtered cells form one peak-calling group (the tutorial groups by cell type); mouse effective genome size `1.87e9` |
+| 02 Common peaks | Signac [Merging objects](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/merging.Rmd) | Identical | `reduce()`, then keep widths `> 20` and `< 10000`, the tutorial's values |
+| 03 QC metrics | Signac [10x multiome](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_multiomic.Rmd), [Merging objects](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/merging.Rmd) | Follows | `CreateChromatinAssay(sep = c(":", "-"))`, `NucleosomeSignal`, `TSSEnrichment`; counts recalculated on the common peaks with `FeatureMatrix`. `seqlevelsStyle("UCSC")` is equivalent to the tutorial's `paste0("chr", …)`; `EnsDb.Mmusculus.v79` is Signac's mouse annotation |
+| 05–06 DoubletFinder | [DoubletFinder README](https://github.com/chris-mcginnis-ucsf/DoubletFinder) | Follows | `paramSweep(sct = FALSE)` → `summarizeSweep` → `find.pK` → `modelHomotypic` → homotypic-adjusted `nExp` → `doubletFinder`. Meets both README best practices: run per sample, never on pooled distinct samples, and remove low-quality clusters first (phase 2). The expected rate comes from the 10x Multiome table instead of the example's fixed 7.5% |
+| 07 RNA | Seurat [SCTransform v2](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/sctransform_v2_vignette.Rmd), [v5 integration](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/seurat5_integration.Rmd), [Cell cycle](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/cell_cycle_vignette.Rmd) | Follows | SCT v2 with glmGamPoi, `IntegrateLayers(CCAIntegration, normalization.method = "SCT")`, `PrepSCTFindMarkers`, `CellCycleScoring` after `NormalizeData`. SCT is run per sample and the objects merged, instead of splitting layers of one object; both fit one SCT model per sample. The explicit `PrepSCTIntegration` is redundant (`IntegrateLayers` repeats it) but harmless |
+| 08 ATAC | Signac [scATAC-seq integration](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/integrate_atac.Rmd), [Motif analysis](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/motif_vignette.Rmd), [Gene activity](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_vignette.Rmd) | Follows | Per-sample and merged `FindTopFeatures`/`RunTFIDF`/`RunSVD`, `FindIntegrationAnchors(reduction = "rlsi")`, `IntegrateEmbeddings` keeping component 1 and excluding it downstream. Configurable values differ: dims `2:40`/`1:40` (tutorial `2:30`/`1:30`), `min_cutoff` `q5` (tutorial `10`). Motif, chromVAR and gene-activity calls match the tutorials |
+| 09 Heteroplasmy | Signac [Mitochondrial genotyping](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/mito.Rmd) | Deliberately different | `ReadMGATK` as in the tutorial. Signac's `AlleleFreq()` divides alternate reads by all reads at the site; this pipeline divides by reference + alternate reads, so other-base errors do not lower the fraction (the YY_06 definition, which reproduces earlier results exactly). Known sites are scored directly instead of being discovered with `IdentifyVariants` |
+| 10 Copy number | No official tutorial | Custom | Based on the MitoEJ copy-number notebook; see Step 10 |
+| 11–12 WNN | Seurat [WNN](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/weighted_nearest_neighbor_analysis.Rmd), Signac [10x multiome](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_multiomic.Rmd) | Follows | `FindMultiModalNeighbors`, UMAP on `weighted.nn`, `FindClusters(graph.name = "wsnn", algorithm = 3)`. Dims `1:20`/`2:40` are configurable (tutorials use `1:50` with `2:50` or `2:40`) |
+| 13 Metadata | None | Pipeline bookkeeping | Attaches step 09 and 10 tables by cell |
+| 14 Markers | Seurat [PBMC 3k](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/pbmc3k_tutorial.Rmd) | Follows | `FindAllMarkers(only.pos = TRUE)` with `min.pct = 0.1` and `logfc.threshold = 0.25`, stricter than the Seurat 5 defaults (0.01 and 0.1), then adjusted p < 0.05 |
+| Sex prediction (07) | [cellXY README](https://github.com/phipsonlab/cellXY) | Follows | `classifySex(counts, genome = "Mm")`; `qc = FALSE` because cells have already passed pipeline QC (the README default is `TRUE`) |
+
+To use Signac's heteroplasmy definition instead, change the denominator in `allele_fraction()` in `scripts/09_mgatk_metrics.R` from reference + alternate reads to `Depth_<position>`. With few non-reference, non-alternate reads at these sites, the two definitions give nearly identical values.
+
+## Adapting the pipeline to other species or mtDNA variants
+
+The workflow is written for mouse (mm10) and the m.5019/m.5024 variants. The Nextflow structure, QC, DoubletFinder, integration, WNN, copy-number method and marker testing are general; the places below hard-code the species or the variants. Editing any R script reruns every task on the next run.
+
+### Human data (GRCh38/hg38)
+
+Run Cell Ranger ARC and mgatk on a matching human reference (mgatk with chromosome `chrM`, length 16,569 bp), then change:
+
+| File | What to change | Mouse value → human example |
+| --- | --- | --- |
+| `scripts/01_peaks.R` | MACS effective genome size; standard chromosomes; peak blacklist | `1.87e9` → `2.7e9`; `species = "Mus musculus"` → `"Homo sapiens"`; `Signac::blacklist_mm10` → `Signac::blacklist_hg38_unified` |
+| `scripts/00_common.R`, `annotation_mm10()` | Gene annotation for TSS enrichment, gene activity and ATAC objects | `EnsDb.Mmusculus.v79` → `EnsDb.Hsapiens.v86`; `genome = "mm10"` → `"hg38"` (also in `make_assays()`) |
+| `scripts/00_common.R`, `make_assays()` | Ribosomal gene pattern (the mitochondrial pattern `^[Mm][Tt]-` already matches human `MT-`) | `^Rp[ls]` → `^RP[SL]` |
+| `scripts/00_common.R`, `annotate_sample_rna()` | Sex prediction genome | `cellXY::classifySex(..., genome = "Mm")` → `genome = "Hs"` |
+| `scripts/00_common.R`, `score_sample_cell_cycle()` | Cell-cycle genes: Seurat's `cc.genes.updated.2019` list uses human symbols (`MCM5`, `PCNA`, …) and is matched ignoring case, so all 43 S and 54 G2M genes match human data unchanged; only the "mouse gene symbols" error message needs updating | none |
+| `scripts/00_common.R`, `add_atac_feature_assays()` | Genome for motif matching and chromVAR | `BSgenome.Mmusculus.UCSC.mm10` → `BSgenome.Hsapiens.UCSC.hg38` (install it in the environment). The JASPAR2020 CORE vertebrate motifs can stay: 630 of the 746 are human-derived. For human-only motifs, replace `tax_group = "vertebrates"` with `species = 9606` (633 motifs) |
+| `scripts/10_estimate_mtdna_copy_number.R` | Autosomes used for the nuclear reference, and the default blacklist | `^chr([1-9]\|1[0-9])$` (chr1–19) → `^chr([1-9]\|1[0-9]\|2[0-2])$` (chr1–22), in `select_reference()` and the reference-BED check; `blacklist_mm10` → `blacklist_hg38_unified`, or set `copy_number.blacklist` to a hg38 BED |
+| Pipeline JSON | Plot markers and QC thresholds | `WNN.lineage_markers` → human symbols (e.g. upper-case genes); review all QC thresholds for the new data |
+
+Also check the doublet rate: `nextgem_multiome_doublet_rate()` depends on the 10x chemistry, not the species, so it stays valid for Next GEM Multiome data. Update the tests in `tests/` that use mouse gene names or chromosomes.
+
+### Other mtDNA variants
+
+Variant positions and pooling live in `scripts/09_mgatk_metrics.R`:
+
+1. **Add or change sites** in the `variants` table (`pos`, `ref`, `alt`). The script checks every reference allele against mgatk's `chrM_refAllele.txt` and stops if one differs, so a wrong position or reference is caught. Each site automatically gets `Depth_`, `Allele_ref_`, `Allele_mut_`, base/strand counts and `Heteroplasmy_<pos>` (plus `_covered`, `_fwd`, `_rev`) columns.
+2. **Pools (optional).** To pool sites that tag the same haplotype, add an `add_pool()` call, e.g. `add_pool("all_1234", c(1234L, 5678L))`. List under `reciprocal` any site where the *reference* allele marks the mutant haplotype (as for five sites in the 5024 pool). Remove the 5019/5024 pools if they do not apply.
+3. **Step 13 required columns.** `scripts/13_add_mgatk.R` checks that each mgatk table contains `Heteroplasmy_5019`, `Heteroplasmy_all_5019` and `Depth_all_5019`. Replace these with columns of your own variants, or keep only `mtDNA_depth` and `mtDNA_count`. All other columns are attached automatically.
+4. **Coverage cut-offs.** `_covered` columns require at least 10 informative reads per site and 25 per pool (`allele_fraction()` calls in `09_mgatk_metrics.R`); adjust if your coverage differs.
+5. **Tests and documentation.** Update the site list in `tests/mgatk_metrics.R` and the Step 09 tables and formulas in this README.
+
+For human variants, positions refer to the human mtDNA (rCRS/hg38 `chrM`); the reference-allele check confirms that mgatk used the expected sequence.

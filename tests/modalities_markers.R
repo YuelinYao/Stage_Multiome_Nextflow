@@ -42,10 +42,18 @@ run_checks <- function() {
   result <- read.delim('cluster_markers.tsv')
   stopifnot(nrow(result) > 0, all(is.finite(result$p_val_adj) & result$p_val_adj < 0.05),
             all(paste0('gene', 1:10) %in% result$gene))
+  # One per-cluster file per WNN cluster, together holding exactly the combined rows.
+  per_cluster <- lapply(levels(factor(obj$wsnn_clusters)), function(cl)
+    read.delim(file.path('per_cluster', paste0('cluster_', cl, '_markers.tsv'))))
+  stopifnot(sum(vapply(per_cluster, nrow, integer(1))) == nrow(result))
+  unlink('per_cluster', recursive = TRUE)
   obj$wsnn_clusters <- '0'; saveRDS(obj, combined)
   for (expr in parse(markers)[-(1:2)]) eval(expr, env)
   empty <- read.delim('cluster_markers.tsv')
   stopifnot(nrow(empty) == 0, all(c('p_val_adj', 'cluster', 'gene') %in% names(empty)))
+  # A single cluster still gets its own header-only file.
+  stopifnot(identical(list.files('per_cluster'), 'cluster_0_markers.tsv'),
+            nrow(read.delim('per_cluster/cluster_0_markers.tsv')) == 0)
 }
 run_checks()
 cat('All legacy-modality and final-marker checks passed.\n')

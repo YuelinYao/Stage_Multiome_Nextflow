@@ -39,6 +39,10 @@ run_checks <- function() {
   rna[['integrated.cca']] <- reduction('RNA', 'cca_')
   atac[['lsi']] <- reduction('ATAC', 'LSI_')
   atac[['integrated_lsi']] <- reduction('ATAC', 'integratedLSI_')
+  # Step 08 feature assays must be copied into the WNN object, aligned by cell.
+  motif_scores <- matrix(rnorm(2 * 240), 2, 240, dimnames = list(c('Ctcf', 'Foxa1'), cells))
+  atac[['chromvar_rename']] <- CreateAssayObject(data = motif_scores)
+  atac[['gene.activities']] <- CreateAssayObject(counts = counts[1:5, ])
   rna_file <- file.path(task_dir, 'rna.rds'); saveRDS(rna, rna_file)
   atac_file <- file.path(task_dir, 'atac.rds'); saveRDS(atac[, rev(cells)], atac_file)
   cfg <- list(RNA_processing = list(integrate_rna = TRUE, RNA_dims = 1:10),
@@ -70,6 +74,9 @@ run_checks <- function() {
                                       'Cell_lineage_umap.pdf')))$size > 1000))
   stopifnot(identical(colnames(result), cells), 'wsnn_clusters' %in% colnames(result[[]]),
             identical(result@misc$wnn_reductions, c(RNA = 'integrated.cca', ATAC = 'lsi')))
+  stopifnot(all(c('chromvar_rename', 'gene.activities') %in% Assays(result)),
+            isTRUE(all.equal(GetAssayData(result, assay = 'chromvar_rename', layer = 'data')['Ctcf', ],
+                             motif_scores['Ctcf', ], check.attributes = FALSE)))
   # Cover the other integration-switch combinations; WNN must select the
   # appropriate reduction from whichever saved modality objects it receives.
   for (switches in list(c(FALSE, FALSE), c(FALSE, TRUE), c(TRUE, TRUE))) {

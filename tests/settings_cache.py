@@ -57,7 +57,8 @@ elif step=='10':
 elif step=='12':
  write(a[0]); write('wnn_clusters_umap.pdf'); write('Cell_lineage_umap.pdf')
 elif step=='13': write(a[1]); write(a[2])
-elif step=='14': write('cluster_markers.tsv')
+elif step=='14':
+    write('cluster_markers.tsv'); os.makedirs('per_cluster', exist_ok=True); write('per_cluster/cluster_0_markers.tsv')
 else: raise RuntimeError('Unexpected script '+sys.argv[1])
 if label: (root/(label+'.finished')).touch()
 '''

@@ -284,6 +284,7 @@ process DEG_STAGE {
   path obj
   output:
   path 'cluster_markers.tsv'
+  path 'per_cluster/*.tsv'
   script:
   """
   # R source checksum: ${rSourceHash}

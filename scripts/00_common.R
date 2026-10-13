@@ -532,6 +532,40 @@ read_stage_objects <- function(files, assay) {
   names(items) <- ids
   items[order(ids)]
 }
+# Rename chromVAR rows from JASPAR motif IDs (e.g. MA0139.1) to TF names (e.g. CTCF).
+# Some TF names occur more than once, so repeats are made unique (CTCF, CTCF.1).
+rename_motif_rows <- function(deviations, motif_names) {
+  ids <- rownames(deviations)
+  if (!all(ids %in% names(motif_names))) stop_bad("Missing motif names for chromVAR rows")
+  rownames(deviations) <- make.unique(unname(unlist(motif_names[ids])))
+  deviations
+}
+# Stage ATAC feature assays, following the Signac motif and gene-activity vignettes:
+# 'chromvar' (motif deviations by JASPAR ID), 'chromvar_rename' (the same by TF name)
+# and 'gene.activities' (fragment counts over gene bodies + 2 kb upstream).
+add_atac_feature_assays <- function(obj, cpus = 1L) {
+  for (pkg in c("JASPAR2020", "TFBSTools", "BSgenome.Mmusculus.UCSC.mm10", "chromVAR", "motifmatchr"))
+    if (!requireNamespace(pkg, quietly = TRUE)) stop_bad("Install ", pkg, " for motif and chromVAR assays")
+  genome <- BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+  DefaultAssay(obj) <- "ATAC"
+  pfm <- TFBSTools::getMatrixSet(JASPAR2020::JASPAR2020,
+    opts = list(collection = "CORE", tax_group = "vertebrates", all_versions = FALSE))
+  obj <- AddMotifs(obj, genome = genome, pfm = pfm, assay = "ATAC", verbose = FALSE)
+  # chromVAR runs through BiocParallel; use only the CPUs allocated to this task.
+  BiocParallel::register(if (cpus > 1L) BiocParallel::MulticoreParam(cpus) else BiocParallel::SerialParam())
+  set.seed(123)  # chromVAR samples background peaks at random
+  obj <- RunChromVAR(obj, genome = genome, assay = "ATAC", new.assay.name = "chromvar", verbose = FALSE)
+  # Deviation z-scores are stored as data, not counts.
+  obj[["chromvar_rename"]] <- CreateAssayObject(data = rename_motif_rows(
+    GetAssayData(obj, assay = "chromvar", layer = "data"),
+    GetMotifData(obj, assay = "ATAC", slot = "motif.names")))
+  activities <- GeneActivity(obj, assay = "ATAC", verbose = FALSE)
+  obj[["gene.activities"]] <- CreateAssayObject(counts = activities)
+  obj <- NormalizeData(obj, assay = "gene.activities", normalization.method = "LogNormalize",
+    scale.factor = median(Matrix::colSums(activities)), verbose = FALSE)
+  DefaultAssay(obj) <- "ATAC"
+  obj
+}
 cluster_qc_reduction <- function(obj, reduction, dims, umap_dims, prefix, settings) {
   if (ncol(Embeddings(obj, reduction)) < max(c(dims, umap_dims)))
     stop_bad("Insufficient dimensions in ", reduction)

@@ -14,3 +14,8 @@ args <- commandArgs(trailingOnly = TRUE)
   # Apply significance to adjusted p-values explicitly.
   markers <- filter_significant_markers(markers)
   write_tsv(markers, "cluster_markers.tsv")
+  # Also save one table per WNN cluster; clusters without significant markers get a header-only file.
+  dir.create("per_cluster", showWarnings = FALSE)
+  for (cl in levels(Idents(obj)))
+    write_tsv(markers[as.character(markers$cluster) == cl, , drop = FALSE],
+              file.path("per_cluster", paste0("cluster_", cl, "_markers.tsv")))
