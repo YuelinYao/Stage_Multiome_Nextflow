@@ -12,11 +12,11 @@ This Nextflow workflow analyses mouse single-cell multiome data (RNA + ATAC, mm1
 - [Pipeline settings JSON](#pipeline-settings-json)
   - [Run parameters](#run-parameters)
   - [Analysis parameters](#analysis-parameters)
-- [Output files and directory structure](#output-files-and-directory-structure)
 - [Vignette: example test run](#vignette-example-test-run)
   - [Phase 1: review](#phase-1-review)
   - [Phase 2: cluster review](#phase-2-cluster-review)
   - [Phase 3: analysis](#phase-3-analysis)
+- [Output files and directory structure](#output-files-and-directory-structure)
 - [Details for each step](#details-for-each-step)
 - [Resuming after JSON edits](#resuming-after-json-edits)
 - [Running several stages](#running-several-stages)
@@ -355,6 +355,80 @@ With `reference_bed: null`, each sample selects nuclear intervals from its ARC f
 
 Each analysis section has independent defaults matching the examples above; changing one section does not change another section’s clustering settings.
 
+## Vignette: example test run
+
+**Before you start:** copy two files from the repository to your own location and edit the copies: [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) (paths and analysis settings) and [site.config](site.config) (CPUs, memory, time limits and any Slurm queue/account). Use the same two files for all three phases. Editing them inside the repository would conflict with `git pull`. The commands below use the repository paths on the Cambridge MBU cluster; replace `-params-file` and `-c` with your copies, and the `/suffolk/...` paths with your own outside the MBU.
+
+
+**Where to launch:** `-resume` continues the most recent run recorded in the launch directory’s `.nextflow/` folder, so start every phase of a stage from the same directory. When processing several stages side by side, launch each stage from its own directory, using absolute paths for `main.nf`, `site.config` and the JSON.
+
+```bash
+mkdir test_run
+cd test_run
+cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/pipeline_settings.example.json .
+cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/site.config .
+```
+
+This example runs all three phases on the three test samples in [examples/samples\_test.csv](examples/samples_test.csv) (stage E8.5), using copies of the example settings. The output folder is set by `outdir` inside `pipeline_settings.example.json`, not on the command line. The example points to an existing location:
+
+```json
+"outdir": "/suffolk/WorkGenomicsD/yy605/stage_results_test",
+```
+
+Run all three phases from inside `test_run`, so `-resume` can reuse earlier tasks.
+
+
+### Phase 1: review
+
+Run `--phase review` to calculate raw QC distributions (step 01-04). This phase uses the `peaks` settings and does not apply QC thresholds.
+
+```bash
+NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file pipeline_settings.example.json \
+  --phase review \
+  -profile slurm,conda -c site.config
+```
+
+![Review phase](figures/review.png)
+
+Expected output: all 8 tasks (steps 01–04) completed in about 34 min.
+Inspect `<outdir>/E8.5/qc/review/` and adjust `thresholds` in `pipeline_settings.example.json` if needed. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
+
+### Phase 2: cluster review
+
+Run `--phase cluster_review` to cluster the QC-passing cells of each sample (step 05):
+
+```bash
+NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file pipeline_settings.example.json \
+  --phase cluster_review \
+  -profile slurm,conda -c site.config -resume
+```
+
+![Cluster review phase](figures/review-cluster.png)
+
+Expected output: steps 01–04 reused from the review run (`cached`); only the 3 step 05 tasks ran, in about 15 min.
+Then inspect `<outdir>/E8.5/qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. If QC thresholds, `review_QC_cluster` settings, input data, seeds or package versions change, rerun cluster review because cluster IDs may change.
+
+### Phase 3: analysis
+
+Run `--phase analysis` once you have added the low-quality cluster IDs to `doublet.exclude_clusters` (steps 06–14).
+
+
+```bash
+NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
+  -params-file pipeline_settings.example.json \
+  --phase analysis \
+  -profile slurm,conda -c site.config -resume
+```
+
+![Analysis phase](figures/analysis.png)
+
+Expected output: steps 01–04 reused; the 14 analysis tasks (steps 06–14) ran in about 1 h 34 min.
+The final object is `<outdir>/E8.5/objects/wnn_mgatk.rds`; DEGs for cell-type annotation are in `<outdir>/E8.5/deg`; run times and resource use are in `<outdir>/E8.5/reports/`. 
+
+Do not change the QC `thresholds`, `sample_overrides` or `review_QC_cluster` settings between cluster review and analysis. If you need different QC settings, rerun `--phase cluster_review`, inspect the new clusters (their IDs may change), update `doublet.exclude_clusters`, then run analysis.
+
 ## Output files and directory structure
 
 Published results are organised under `<outdir>/<stage>/`. For example, the example JSON (`"outdir": "/suffolk/WorkGenomicsD/yy605/stage_results_test"`, `"stage": "E8.5"`) creates the structure below after completing all three phases. `<sample>` is the `sample_id` from your CSV, and per-sample files are repeated for each selected sample. Nextflow task work directories are kept in `<outdir>/<stage>/work/`, and one execution trace, report and timeline per phase in `<outdir>/<stage>/reports/`.
@@ -442,82 +516,6 @@ stage_results_test/
 The `review` phase produces `peaks/` and `qc/review/`. The `cluster_review` phase adds `qc/cluster_review/`. The `analysis` phase reads the saved cluster-review tables and adds `qc/filtered/`, `mgatk/`, `copy_number/`, `objects/` and `deg/`; upstream peak/QC tasks are reused with `-resume` when unchanged. Integrated RDS files are produced only when the corresponding integration switch is enabled. Each distinct RNA/ATAC analysis object is saved once; WNN uses `rna_integrated.rds` or `rna_unintegrated.rds` and `atac_integrated.rds` or `atac_unintegrated.rds` according to those switches.
 
 The per-sample `<sample>.rna.qc.rds` and `<sample>.atac.qc.rds` checkpoints remain in the `QC_FILTER_DOUBLET` task directory under `<outdir>/<stage>/work/`; they are not copied into the published results. Task logs (`.command.log`, `.command.err`, `.command.out`) are also under `work/`, while `.nextflow.log` is in the launch directory. Keep `work/` and `.nextflow/` when resuming runs. ATAC-containing RDS objects refer to the original fragment files, so those shared input paths must remain accessible when using fragment-based Signac functions later.
-
-## Vignette: example test run
-
-**Before you start:** copy two files from the repository to your own location and edit the copies: [examples/pipeline\_settings.example.json](examples/pipeline_settings.example.json) (paths and analysis settings) and [site.config](site.config) (CPUs, memory, time limits and any Slurm queue/account). Use the same two files for all three phases. Editing them inside the repository would conflict with `git pull`. The commands below use the repository paths on the Cambridge MBU cluster; replace `-params-file` and `-c` with your copies, and the `/suffolk/...` paths with your own outside the MBU.
-
-
-**Where to launch:** `-resume` continues the most recent run recorded in the launch directory’s `.nextflow/` folder, so start every phase of a stage from the same directory. When processing several stages side by side, launch each stage from its own directory, using absolute paths for `main.nf`, `site.config` and the JSON.
-
-```bash
-mkdir test_run
-cd test_run
-cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/pipeline_settings.example.json .
-cp /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/site.config .
-```
-
-This example runs all three phases on the three test samples in [examples/samples\_test.csv](examples/samples_test.csv) (stage E8.5), using copies of the example settings. The output folder is set by `outdir` inside `pipeline_settings.example.json`, not on the command line. The example points to an existing location:
-
-```json
-"outdir": "/suffolk/WorkGenomicsD/yy605/stage_results_test",
-```
-
-Run all three phases from inside `test_run`, so `-resume` can reuse earlier tasks.
-
-
-### Phase 1: review
-
-Run `--phase review` to calculate raw QC distributions (step 01-04). This phase uses the `peaks` settings and does not apply QC thresholds.
-
-```bash
-NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
-  -params-file pipeline_settings.example.json \
-  --phase review \
-  -profile slurm,conda -c site.config
-```
-
-![Review phase](figures/review.png)
-
-Expected output: all 8 tasks (steps 01–04) completed in about 34 min.
-Inspect `<outdir>/E8.5/qc/review/` and adjust `thresholds` in `pipeline_settings.example.json` if needed. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
-
-### Phase 2: cluster review
-
-Run `--phase cluster_review` to cluster the QC-passing cells of each sample (step 05):
-
-```bash
-NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
-  -params-file pipeline_settings.example.json \
-  --phase cluster_review \
-  -profile slurm,conda -c site.config -resume
-```
-
-![Cluster review phase](figures/review-cluster.png)
-
-Expected output: steps 01–04 reused from the review run (`cached`); only the 3 step 05 tasks ran, in about 15 min.
-Then inspect `<outdir>/E8.5/qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. If QC thresholds, `review_QC_cluster` settings, input data, seeds or package versions change, rerun cluster review because cluster IDs may change.
-
-### Phase 3: analysis
-
-Run `--phase analysis` once you have added the low-quality cluster IDs to `doublet.exclude_clusters` (steps 06–14).
-
-
-```bash
-NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/main.nf \
-  -params-file pipeline_settings.example.json \
-  --phase analysis \
-  -profile slurm,conda -c site.config -resume
-```
-
-![Analysis phase](figures/analysis.png)
-
-Expected output: steps 01–04 reused; the 14 analysis tasks (steps 06–14) ran in about 1 h 34 min.
-The final object is `<outdir>/E8.5/objects/wnn_mgatk.rds`; DEGs for cell-type annotation are in `<outdir>/E8.5/deg`; run times and resource use are in `<outdir>/E8.5/reports/`. 
-
-Do not change the QC `thresholds`, `sample_overrides` or `review_QC_cluster` settings between cluster review and analysis. If you need different QC settings, rerun `--phase cluster_review`, inspect the new clusters (their IDs may change), update `doublet.exclude_clusters`, then run analysis.
-
-
 
 ## Details for each step
 
