@@ -579,7 +579,7 @@ Categorical plots use the supplied 100-colour `plot_palette` in `scripts/00_comm
 
 Run `Rscript tests/qc_review.R` to check table combination, QC summaries, MAD bounds, plotting and preservation of your supplied JSON with synthetic data.
 
-For k = 3, 5 or 7, bounds are `median ± k × mad(x, constant = 1.4826)` and appear as `mad_k_lower`/`mad_k_upper` in the summary. Non-finite values are excluded from statistics. Bounds are not clipped to zero and are not automatically applied. Zero MAD gives equal lower/upper bounds; inspect the distribution before choosing thresholds. Note that The `1.4826` constant is a scaling factor. Under a perfectly normal (Gaussian) distribution, multiplying the raw MAD by `1.4826` makes it exactly equal to the standard deviation.
+For k = 3, 5 or 7, bounds are `median ± k × mad(x, constant = 1.4826)` and appear as `mad_k_lower`/`mad_k_upper` in the summary. Non-finite values are excluded from statistics. Bounds are not clipped to zero and are not automatically applied. Zero MAD gives equal lower/upper bounds; inspect the distribution before choosing thresholds. Note that the `1.4826` constant is a scaling factor. Under a perfectly normal (Gaussian) distribution, multiplying the raw MAD by `1.4826` makes it exactly equal to the standard deviation.
 
 ### Step 05: review low-quality clusters before DoubletFinder
 
@@ -590,8 +590,6 @@ The shared `preprocess_qc_rna` helper in `scripts/00_common.R` explicitly uses s
 Outputs in `<outdir>/<stage>/qc/cluster_review/`: `<sample>.cluster_cells.tsv`, `<sample>.cluster_summary.tsv`, `<sample>.cluster_qc.pdf`, and `<sample>.cluster_markers.tsv`. Marker tables retain only rows with finite `p_val_adj < 0.05`. Review RNA counts, mitochondrial percentages and marker informativeness together. Enter unwanted cluster IDs as strings in `doublet.exclude_clusters` (Optional). This provides the manual review/removal route described by the [DoubletFinder authors](https://github.com/chris-mcginnis-ucsf/DoubletFinder#best-practices-for-scrna-seq-data-generated-without-sample-multiplexing). For a related example of reviewing QC metrics by cluster, removing low-quality clusters and repeating preprocessing, see the [snRNA-seq Guide: cluster QC](https://lahuuki.github.io/rstats/2026-03-19-snRNAseqGuide/index.html).
 
 ### Step 06: joint QC, cluster removal, DoubletFinder and cellXY
-
-Step 06 also writes an internal `<sample>.singlet_barcodes.tsv` with `sample_id` and original `barcode` columns. Step 10 consumes it directly, allowing copy-number estimation to start alongside step 09. This table stays in the Nextflow work directory.
 
 `06_qc_doubletfinder.R` applies all eight QC thresholds and reads the saved `<sample>.cluster_cells.tsv` from step 05. It validates the sample ID, unique barcodes, cluster labels, QC-passing cell set and QC measurements, aligns labels by barcode, and removes the listed clusters without repeating the preliminary clustering. It then computes normalization, variable features, PCA, neighbours and clusters on the retained cells before running DoubletFinder. Unknown exclusion IDs, mismatched cells and changed QC measurements fail explicitly; rerun cluster review when inputs or QC decisions change. Cluster removal reads `reviewed_qc_cluster` directly. These original reviewed labels remain in the RNA metadata; `pre_doublet_clusters` is created only by the subsequent reclustering for DoubletFinder’s homotypic correction. The two columns represent separate clustering steps, although their assignments can coincide when the retained cells and settings produce the same partition. At least 100 cells must remain before DoubletFinder.
 
@@ -619,6 +617,8 @@ Cell counts are reported per sample in `<outdir>/<stage>/qc/filtered/<sample>.qc
 | 2\. Reviewed-cluster removal, before reclustering | `cluster_pass` | `cluster_removed` |
 | 3\. DoubletFinder singlet selection | `df_singlets` | `df_removed` |
 | 4\. cellXY male-female doublet removal (`doublet.remove_mf_doublets`) | `final_singlets` | `mf_doublets_removed` (of `mf_doublets_flagged`) |
+
+Step 06 also writes an internal `<sample>.singlet_barcodes.tsv` with `sample_id` and original `barcode` columns. Step 10 consumes it directly, allowing copy-number estimation to start alongside step 09. This table stays in the Nextflow work directory.
 
 ### Step 07: individual RNA preprocessing, then stage merge and integration
 
@@ -834,10 +834,10 @@ These rerun tasks besides JSON edits:
 The workflow analyses one stage per run, so process stages side by side, each in its own launch folder:
 
 ```text
-Working_dir_Stage_results/
+Stage_Multiome_runs/
 ├── samples.csv            # one sheet for all stages (the stage column selects rows)
 ├── E8.5/
-│   ├── pipeline_settings.example.json   # "stage": "E8.5", shared samples.csv
+│   ├── settings.json      # "stage": "E8.5", shared samples.csv
 │   ├── site.config
 │   └── README.md          # run notes: commands, status, stage-specific settings
 └── E10.5/
