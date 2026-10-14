@@ -76,7 +76,7 @@ Package versions for the existing `stage_multiome` Conda environment are recorde
 
 ### 2\. Input files
 
-#### Sample sheet (`samples.csv`)
+#### Sample sheet (CSV)
 
 The sample CSV lists one sample per row and must contain only `stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir`; see [examples/samples_test.csv](examples/samples_test.csv). For example:
 
@@ -447,7 +447,7 @@ NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflo
 
 ![Review phase](figures/review.png)
 
-Expected output: all 8 tasks (steps 01–04) completed in about 35 min.
+Expected output: all 8 tasks (steps 01–04) completed in about 34 min.
 Inspect `<outdir>/E8.5/qc/review/` and adjust `thresholds` in `pipeline_settings.example.json` if needed. Keep peak limits unchanged across all phases; changing them requires rerunning review and cluster review.
 
 ### Phase 2: cluster review
@@ -461,9 +461,9 @@ NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflo
   -profile slurm,conda -c site.config -resume
 ```
 
-![Cluster review phase](figures/cluster_review.png)
+![Cluster review phase](figures/review-cluster.png)
 
-Expected output: steps 01–04 reused from the review run (`cached`); only the 3 step 05 tasks ran, in about 14 min.
+Expected output: steps 01–04 reused from the review run (`cached`); only the 3 step 05 tasks ran, in about 15 min.
 Then inspect `<outdir>/E8.5/qc/cluster_review/`: per-cell cluster assignments, cluster-level QC summaries, violin plots and RNA markers. Add any low-quality cluster IDs to `doublet.exclude_clusters` for the corresponding sample. Empty exclusions mean no additional cluster removal; the workflow does not automatically identify low-quality biological populations. If QC thresholds, `review_QC_cluster` settings, input data, seeds or package versions change, rerun cluster review because cluster IDs may change.
 
 ### Phase 3: analysis
@@ -480,7 +480,7 @@ NXF_VER=25.10.8 nextflow run /suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflo
 
 ![Analysis phase](figures/analysis.png)
 
-Expected output: steps 01–04 reused; the 14 analysis tasks (steps 06–14) ran in about 1 h 29 min.
+Expected output: steps 01–04 reused; the 14 analysis tasks (steps 06–14) ran in about 1 h 34 min.
 The final object is `<outdir>/E8.5/objects/wnn_mgatk.rds`; DEGs for cell-type annotation are in `<outdir>/E8.5/deg`; run times and resource use are in `<outdir>/E8.5/reports/`. 
 
 Do not change the QC `thresholds`, `sample_overrides` or `review_QC_cluster` settings between cluster review and analysis. If you need different QC settings, rerun `--phase cluster_review`, inspect the new clusters (their IDs may change), update `doublet.exclude_clusters`, then run analysis.
@@ -898,7 +898,7 @@ Smaller libraries scale roughly with BAM size; the 007 E8.5 BAMs (21–47 GB) ta
 
 Step 08 (ATAC) also runs motif matching, chromVAR and gene activity. On 300 cells of `5024_Hi_2` these took about 12 min with 4 CPUs; motif matching is a fixed cost for all peaks, while chromVAR and gene activity grow with the number of cells, so expect this step to take a few hours for a whole stage.
 
-Measured times and memory for the vignette's three test samples (E8.5: `5019_Hi_2`, `5024_Hi_2`, `WT_1`) are in [examples/reports/](examples/reports/): an execution report, timeline and trace for each phase. In that run, step 10 took 48–60 min per sample (1.7 GB), and step 08 took 53 min with a peak of 87 GB, close to its 96 GB limit; increase `MERGE_INTEGRATE_ATAC` memory in `site.config` for stages with more samples.
+Measured times and memory for the vignette's three test samples (E8.5: `5019_Hi_2`, `5024_Hi_2`, `WT_1`) are in [examples/reports/](examples/reports/): an execution report, timeline and trace for each phase. In that run, step 10 took 49–59 min per sample (1.7 GB); step 08 took 56 min with a peak of 88 GB, close to its 96 GB limit; and step 09 took 4–8 min with a peak of 19 GB, close to its 24 GB limit, because it reads both mgatk runs and runs `IdentifyVariants`. For stages with more or larger samples, increase memory for `MERGE_INTEGRATE_ATAC` and `MGATK_METRICS` in `site.config`.
 
 For actual times of every task in your own runs, open `<outdir>/<stage>/reports/execution_report_<phase>.html`, or read the `realtime`, `peak_rss` and `%cpu` columns of `reports/execution_trace_<phase>.txt`. Use these to tune `time`, `memory` and `cpus` in `site.config` for later stages.
 
