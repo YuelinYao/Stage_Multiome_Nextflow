@@ -16,6 +16,7 @@ params.RNA_processing = null
 params.ATAC_processing = null
 params.WNN = null
 params.copy_number = null
+params.MGATK = null
 
 // Quote every shell argument, including paths containing spaces or apostrophes.
 def shellQuote(value) { "'" + value.toString().replace("'", "'\"'\"'") + "'" }
@@ -46,7 +47,7 @@ def mgatkDataFiles(directory, boolean depthOnly = false) {
 }
 def copyNumberDataFiles(arc, enriched, original, settings) {
   def paths = [file("${arc}/atac_possorted_bam.bam", checkIfExists: true)]
-  paths.addAll(mgatkDataFiles(enriched, true))
+  if (enriched) paths.addAll(mgatkDataFiles(enriched, true))
   if (original) paths.addAll(mgatkDataFiles(original, true))
   def map = file("${arc}/per_barcode_metrics.csv")
   if (map.exists()) paths << map
@@ -209,13 +210,23 @@ process MGATK_METRICS {
   publishDir "${params.outdir}/${params.stage}/mgatk", mode: 'copy'
   input:
   val rSourceHash
-  tuple val(id), val(mgatk_enriched), path(qc), path(mgatk_inputs, stageAs: 'mgatk_inputs/*')
+  tuple val(id), val(enriched), val(original), path(qc), path(mgatk_inputs, stageAs: 'mgatk_inputs/input??/*')
+  val settings
   output:
-  tuple val(id), path("${id}.mtDNA.tsv")
+  tuple val(id), path("${id}.mtDNA.tsv"), emit: metrics
+  path "${id}.mtDNA_coverage.tsv"
+  path "${id}.mtDNA_coverage.pdf"
+  path "${id}.mtDNA_coverage_plot.rds"
+  path "${id}.mtDNA_variants.tsv"
+  path "${id}.mtDNA_variants_high_conf.tsv"
+  path "${id}.mtDNA_variants.pdf"
+  path "${id}.mtDNA_variants_plot.rds"
   script:
+  // A blank directory is passed as "none"; heteroplasmy uses enriched, else ordinary.
   """
   # R source checksum: ${rSourceHash}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/09_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(mgatk_enriched)} '${id}.mtDNA.tsv'
+  ${taskSettingsFile(settings)}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/09_mgatk_metrics.R")} ${shellQuote(id)} ${shellQuote(qc)} ${shellQuote(enriched ?: 'none')} ${shellQuote(original ?: 'none')} '${id}.mtDNA.tsv' process_settings.json
   """
 }
 
@@ -232,12 +243,13 @@ process MTDNA_COPY_NUMBER {
   tuple val(id), path("${id}.settings.txt"), emit: settings
   script:
   def ordinaryArg = original ? "--mgatk-dir " + shellQuote(original) : ''
+  def enrichedArg = enriched ? "--mgatk-enriched-dir " + shellQuote(enriched) : ''
   def mapFile = "${arc}/per_barcode_metrics.csv"
   def mapArg = file(mapFile).exists() ? "--barcode-map " + shellQuote(mapFile) : ''
   """
   # R source checksum: ${rSourceHash}
   ${taskSettingsFile(settings)}
-  Rscript ${shellQuote(projectDir.toString() + "/scripts/10_estimate_mtdna_copy_number.R")} --sample ${shellQuote(id)} --bam ${shellQuote(arc + "/atac_possorted_bam.bam")} --fragments ${shellQuote(arc + "/atac_fragments.tsv.gz")} --metrics-tsv ${shellQuote(singlet_barcodes)} --mgatk-enriched-dir ${shellQuote(enriched)} ${ordinaryArg} ${mapArg} --json process_settings.json --out-prefix ${shellQuote(id)}
+  Rscript ${shellQuote(projectDir.toString() + "/scripts/10_estimate_mtdna_copy_number.R")} --sample ${shellQuote(id)} --bam ${shellQuote(arc + "/atac_possorted_bam.bam")} --fragments ${shellQuote(arc + "/atac_fragments.tsv.gz")} --metrics-tsv ${shellQuote(singlet_barcodes)} ${enrichedArg} ${ordinaryArg} ${mapArg} --json process_settings.json --out-prefix ${shellQuote(id)}
   """
 }
 
@@ -321,6 +333,7 @@ workflow {
   def atacSettings = params.phase == 'analysis' ? PipelineSettings.atac(scopedSettings) : [:]
   def wnnSettings = params.phase == 'analysis' ? PipelineSettings.wnn(scopedSettings) : [:]
   def copyNumberSettings = params.phase == 'analysis' ? PipelineSettings.copyNumber(scopedSettings) : [:]
+  def mgatkSettings = params.phase == 'analysis' ? PipelineSettings.mgatk(scopedSettings) : [:]
 
   // Stop on misspelled sample IDs, which would otherwise be silently ignored.
   if (params.phase != 'review') {
@@ -333,7 +346,8 @@ workflow {
   }
 
   seenIds = new HashSet()
-  // Preserve both mitochondrial sources; step 09 uses enriched, step 10 uses both.
+  // Preserve both mitochondrial sources; step 09 uses enriched (else ordinary) for
+  // heteroplasmy and both for coverage, step 10 uses both for copy number.
   sample_records = Channel.fromPath(params.samples, checkIfExists: true)
     .splitCsv(header: true)
     .map { row ->
@@ -344,26 +358,28 @@ workflow {
     .filter { it.stage?.trim() == params.stage }
     .ifEmpty { error "No rows for stage ${params.stage} in ${params.samples}" }
     .map { row ->
-      ['sample_id', 'arc_out', 'mgatk_enriched_dir'].each { key ->
+      ['sample_id', 'arc_out'].each { key ->
         if (!row[key]?.trim()) error "Missing ${key} in manifest row: ${row}"
       }
+      if (!row.mgatk_enriched_dir?.trim() && !row.mgatk_dir?.trim())
+        error "Provide mgatk_enriched_dir and/or mgatk_dir in manifest row: ${row}"
       def id = row.sample_id.trim()
       if (!(id ==~ /[A-Za-z0-9][A-Za-z0-9_.-]*/))
         error "Invalid sample_id ${id}: start with a letter or number and use only letters, numbers, _, . or -"
       if (id == 'ALL_STAGE') error 'ALL_STAGE is reserved for the combined QC summary'
       if (!seenIds.add(id)) error "Duplicate sample_id for stage ${params.stage}: ${id}"
       def arc = file(row.arc_out.trim()).toAbsolutePath().toString()
-      def enriched = file(row.mgatk_enriched_dir.trim()).toAbsolutePath().toString()
-      // Blank ordinary mgatk is allowed: its estimate will be NA until supplied.
+      // Either mgatk directory may be blank; its estimates are then NA.
+      def enriched = row.mgatk_enriched_dir?.trim() ? file(row.mgatk_enriched_dir.trim()).toAbsolutePath().toString() : ''
       def original = row.mgatk_dir?.trim() ? file(row.mgatk_dir.trim()).toAbsolutePath().toString() : ''
       if (!file("${arc}/filtered_feature_bc_matrix.h5").exists() || !file("${arc}/atac_fragments.tsv.gz").exists())
         error "Missing ARC H5 or fragments: ${arc}"
       if (!file("${arc}/atac_fragments.tsv.gz.tbi").exists()) error "Missing fragment index: ${arc}"
-      if (!java.nio.file.Files.isDirectory(file(enriched)))
+      if (enriched && !java.nio.file.Files.isDirectory(file(enriched)))
         error "Missing mgatk_enriched_dir directory: ${enriched}"
       if (params.phase == 'analysis') {
         if (!file("${arc}/summary.csv").exists()) error "Missing ARC summary.csv: ${arc}"
-        mgatkDataFiles(enriched)
+        [enriched, original].findAll { it }.each { mgatkDataFiles(it) }
         if (!file("${arc}/atac_possorted_bam.bam").exists())
           error "Step 10 requires ARC atac_possorted_bam.bam: ${arc}"
         if (original && !java.nio.file.Files.isDirectory(file(original)))
@@ -404,9 +420,10 @@ workflow {
     MERGE_INTEGRATE_RNA(rSourceHash, filtered.map { id, rna, atac, report, plot -> rna }.collect().map { it.sort { path -> path.name } }, rnaSettings)
     MERGE_INTEGRATE_ATAC(rSourceHash, filtered.map { id, rna, atac, report, plot -> atac }.collect().map { it.sort { path -> path.name } }, atacSettings)
     mgatk_inputs = sample_records.join(filtered).map { id, arc, enriched, original, rna, atac, report, plot ->
-      tuple(id, enriched, rna, mgatkDataFiles(enriched))
+      tuple(id, enriched, original, rna,
+        [enriched, original].findAll { it }.unique().collectMany { mgatkDataFiles(it) }.unique())
     }
-    MGATK_METRICS(rSourceHash, mgatk_inputs)
+    MGATK_METRICS(rSourceHash, mgatk_inputs, mgatkSettings)
     // Start copy-number tasks from each sample's singlets without waiting for
     // RNA/ATAC integration or the heteroplasmy tables produced by step 09.
     copy_inputs = sample_records.join(QC_FILTER_DOUBLET.out.barcodes).map { id, arc, enriched, original, barcodes ->
@@ -421,7 +438,7 @@ workflow {
     atac_for_wnn = scopedSettings.ATAC_processing.integrate_atac == false ?
       MERGE_INTEGRATE_ATAC.out.unintegrated : MERGE_INTEGRATE_ATAC.out.integrated
     WNN_STAGE(rSourceHash, rna_for_wnn, atac_for_wnn, wnnSettings)
-    ADD_MGATK(rSourceHash, WNN_STAGE.out.object, MGATK_METRICS.out.map { id, tab -> tab }.collect().map { it.sort { path -> path.name } }, copy_numbers)
+    ADD_MGATK(rSourceHash, WNN_STAGE.out.object, MGATK_METRICS.out.metrics.map { id, tab -> tab }.collect().map { it.sort { path -> path.name } }, copy_numbers)
     // RNA cluster markers need WNN identities, independently of mtDNA metadata.
     DEG_STAGE(rSourceHash, WNN_STAGE.out.object)
   }

@@ -6,7 +6,7 @@ class PipelineSettings {
     static final List RUN_PARAMETERS = ['samples', 'stage', 'outdir', 'macs3_path',
                                         'conda_env', 'enable_conda', 'phase']
     static final List ANALYSIS_SECTIONS = ['peaks', 'note', 'thresholds', 'sample_overrides',
-        'review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'copy_number']
+        'review_QC_cluster', 'doublet', 'RNA_processing', 'ATAC_processing', 'WNN', 'copy_number', 'MGATK']
 
     static Map analysis(Map supplied) {
         object(supplied, 'Pipeline parameters')
@@ -29,7 +29,8 @@ class PipelineSettings {
                lineage_markers: ['Pou3f1', 'Foxa1', 'Pdgfra']],
          copy_number: [bin_size: 500, quantile: 0.985, mapq: 30, baseq: 20, ploidy: 2,
                        min_nuclear_bases: 1000, min_mt_depth: 5, keep_duplicates: false,
-                       reference_bed: null, blacklist: null]]
+                       reference_bed: null, blacklist: null],
+         MGATK: [vmr: 0.01, strand_correlation: 0.65, n_cells_conf_detected: 300]]
     }
 
     static void object(value, String label) {
@@ -155,6 +156,14 @@ class PipelineSettings {
             if (corrected[0] != 1 || corrected[1] < Math.max(used[1], wnn[1]))
                 throw new IllegalArgumentException('ATAC_integrate_dims must start at 1 and cover ATAC and WNN dimensions')
         }
+        def variant = result.MGATK
+        if (!number(variant.vmr) || variant.vmr <= 0)
+            throw new IllegalArgumentException('MGATK.vmr must be a positive number')
+        if (!number(variant.strand_correlation) || variant.strand_correlation < -1 || variant.strand_correlation > 1)
+            throw new IllegalArgumentException('MGATK.strand_correlation must be between -1 and 1')
+        if (!number(variant.n_cells_conf_detected) || variant.n_cells_conf_detected < 1 ||
+            variant.n_cells_conf_detected != Math.floor(variant.n_cells_conf_detected.doubleValue()))
+            throw new IllegalArgumentException('MGATK.n_cells_conf_detected must be a positive integer')
         result.copy_number.each { key, value ->
             // null means use the standalone script's default, including paths.
             if (value == null) { result.copy_number[key] = defaults().copy_number[key]; return }
@@ -212,6 +221,9 @@ class PipelineSettings {
         canonical([process: 'WNN', WNN: settings.WNN,
                    RNA_processing: [integrate_rna: settings.RNA_processing.integrate_rna],
                    ATAC_processing: [integrate_atac: settings.ATAC_processing.integrate_atac]])
+    }
+    static Map mgatk(Map settings) {
+        canonical([process: 'MGATK', MGATK: settings.MGATK])
     }
     static Map copyNumber(Map settings) {
         def values = new LinkedHashMap(settings.copy_number)

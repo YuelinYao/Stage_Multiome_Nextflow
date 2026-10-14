@@ -160,7 +160,8 @@ read_pipeline_config <- function(file, sample = NULL, process = NULL) {
       doublet = c("thresholds", "doublet"),
       RNA_processing = c("RNA_processing", "component_count"),
       ATAC_processing = c("ATAC_processing", "component_count"),
-      WNN = c("WNN", "RNA_processing", "ATAC_processing"))
+      WNN = c("WNN", "RNA_processing", "ATAC_processing"),
+      MGATK = c("MGATK"))
     if (is.null(process) || !identical(cfg$process, process) ||
         !(process %in% names(task_sections)) ||
         !setequal(names(cfg), c("process", task_sections[[process]])))
@@ -203,7 +204,7 @@ read_pipeline_config <- function(file, sample = NULL, process = NULL) {
     }
   }
   allowed <- c("peaks", "note", "thresholds", "sample_overrides", "review_QC_cluster",
-               "doublet", "RNA_processing", "ATAC_processing", "WNN", "copy_number", "clustering")
+               "doublet", "RNA_processing", "ATAC_processing", "WNN", "copy_number", "MGATK", "clustering")
   unknown <- setdiff(names(cfg), allowed)
   if (length(unknown)) stop_bad("Unknown pipeline JSON sections: ", paste(unknown, collapse = ", "))
   # Step 10 uses these settings independently; reject mistakes before sample QC.
@@ -233,6 +234,21 @@ read_pipeline_config <- function(file, sample = NULL, process = NULL) {
       }
     }
   }
+  # Step 09 variant thresholds (IdentifyVariants); omitted values use the defaults.
+  mgatk <- list(vmr = 0.01, strand_correlation = 0.65, n_cells_conf_detected = 300)
+  if (!is.null(cfg$MGATK)) {
+    named_object(cfg$MGATK, "MGATK")
+    if (any(!names(cfg$MGATK) %in% names(mgatk))) stop_bad("Unknown MGATK settings")
+    for (key in names(cfg$MGATK)) mgatk[[key]] <- cfg$MGATK[[key]]
+  }
+  one_number <- function(v) length(v) == 1L && is.numeric(v) && is.finite(v)
+  if (!one_number(mgatk$vmr) || mgatk$vmr <= 0) stop_bad("MGATK.vmr must be a positive number")
+  if (!one_number(mgatk$strand_correlation) || abs(mgatk$strand_correlation) > 1)
+    stop_bad("MGATK.strand_correlation must be between -1 and 1")
+  if (!one_number(mgatk$n_cells_conf_detected) || mgatk$n_cells_conf_detected < 1 ||
+      mgatk$n_cells_conf_detected != floor(mgatk$n_cells_conf_detected))
+    stop_bad("MGATK.n_cells_conf_detected must be a positive integer")
+  cfg$MGATK <- mgatk
   peaks <- cfg$peaks
   if (is.null(peaks)) peaks <- list()
   named_object(peaks, "peaks")
@@ -542,6 +558,12 @@ read_stage_objects <- function(files, assay) {
   if (anyDuplicated(unlist(lapply(items, colnames)))) stop_bad("Duplicate cell ID")
   names(items) <- ids
   items[order(ids)]
+}
+# Signac IdentifyVariants on mgatk base counts (rows like "A-1-fwd" for every chrM
+# position, columns cells): VMR, strand concordance and detection per variant.
+identify_mtdna_variants <- function(counts, refallele) {
+  Signac::IdentifyVariants(SeuratObject::CreateAssayObject(counts = counts),
+                           refallele = refallele, verbose = FALSE)
 }
 # Rename chromVAR rows from JASPAR motif IDs (e.g. MA0139.1) to TF names (e.g. CTCF).
 # Some TF names occur more than once, so repeats are made unique (CTCF, CTCF.1).

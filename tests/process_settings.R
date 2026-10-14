@@ -28,6 +28,12 @@ stopifnot(identical(read_task(doublet)$doublet$remove_mf_doublets, FALSE))
 doublet$doublet$remove_mf_doublets <- "yes"
 expect_error(read_task(doublet))
 doublet$doublet$remove_mf_doublets <- TRUE
+# Step 09 variant thresholds: task settings, defaults and invalid values.
+mgatk <- list(process = "MGATK", MGATK = list(vmr = 0.02, strand_correlation = 0.7, n_cells_conf_detected = 100))
+stopifnot(isTRUE(all.equal(read_task(mgatk)$MGATK, list(vmr = 0.02, strand_correlation = 0.7, n_cells_conf_detected = 100))))
+stopifnot(read_task(list(process = "MGATK", MGATK = list(vmr = 0.05)))$MGATK$n_cells_conf_detected == 300)
+for (bad in list(list(vmr = 0), list(strand_correlation = 2), list(n_cells_conf_detected = 2.5), list(other = 1)))
+  expect_error(read_task(list(process = "MGATK", MGATK = bad)))
 # Stage tasks need no QC bounds, exclusions or settings from other stages.
 rna <- list(process = "RNA_processing", RNA_processing = full$RNA_processing,
             component_count = 55)

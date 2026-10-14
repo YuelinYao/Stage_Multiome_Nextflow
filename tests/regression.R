@@ -136,14 +136,19 @@ env$ReadMGATK <- function(dir) {
     ref = c("C", "A", "G", "T", "A", "C", "C", "C", "A", "A")),
     counts = counts, depth = data.frame(depth = 100, row.names = "present"))
 }
-env$args <- c("sample", obj_file, "mock", out_file)
+env$identify_mtdna_variants <- function(counts, refallele)
+  data.frame(position = 1L, nucleotide = "A>G", variant = "1A>G", vmr = 0.1, mean = 0, variance = 0,
+             n_cells_conf_detected = 1, n_cells_over_5 = 0, n_cells_over_10 = 0, n_cells_over_20 = 0,
+             strand_correlation = 0.9, mean_coverage = 1)
+env$args <- c("sample", obj_file, "mock", "none", out_file)
 exprs <- parse("scripts/09_mgatk_metrics.R")
 for (expr in exprs[-(1:2)]) eval(expr, env)
 result <- read.delim(out_file)
 stopifnot(result$Heteroplasmy_5019[1] == 0.4, result$Depth_5019[1] == 10,
           result$mtDNA_depth[1] == 100, is.na(result$Heteroplasmy_5019[2]),
           is.na(result$mtDNA_depth[2]))
-unlink(c(config_file, obj_file, out_file))
+unlink(c(config_file, obj_file, out_file,
+         file.path(dirname(out_file), c(paste0("sample.mtDNA_coverage", c(".tsv", ".pdf", "_plot.rds")), paste0("sample.mtDNA_variants", c(".tsv", "_high_conf.tsv", ".pdf", "_plot.rds"))))))
 stopifnot(env$nextgem_multiome_doublet_rate(5000) == 0.039,
           abs(env$nextgem_multiome_doublet_rate(5500) - 0.0425) < 1e-12)
 expect_error(env$nextgem_multiome_doublet_rate(10001))

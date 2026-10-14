@@ -50,7 +50,10 @@ elif step in ['07','08']:
  write(prefix+'_unintegrated.rds')
  if settings[section]['integrate_'+prefix]: write(prefix+'_integrated.rds')
  if step=='07': write('rna_cell_annotations.tsv')
-elif step=='09': write(a[3])
+elif step=='09':
+ write(a[4])
+ for suffix in ['mtDNA_coverage.tsv','mtDNA_coverage.pdf','mtDNA_coverage_plot.rds','mtDNA_variants.tsv',
+                'mtDNA_variants_high_conf.tsv','mtDNA_variants.pdf','mtDNA_variants_plot.rds']: write(a[0]+'.'+suffix)
 elif step=='10':
  prefix=a[a.index('--out-prefix')+1]
  for suffix in ['mtDNA_copy_number.tsv','nuclear_reference.bed','settings.txt']: write(prefix+'.'+suffix)
@@ -88,7 +91,9 @@ def main():
                              'sample.T.txt.gz', 'chrM_refAllele.txt', 'sample.depthTable.txt']:
                     (enriched / name).write_text('synthetic\n')
                 original = root / sample / 'ordinary'; original.mkdir()
-                (original / 'sample.depthTable.txt').write_text('synthetic\n')
+                for name in ['sample.A.txt.gz', 'sample.C.txt.gz', 'sample.G.txt.gz',
+                             'sample.T.txt.gz', 'chrM_refAllele.txt', 'sample.depthTable.txt']:
+                    (original / name).write_text('synthetic\n')
                 writer.writerow(['E8.5', sample, arc, enriched, original])
         config = root / 'test.config'
         config.write_text("process { withName: '.*' { cpus = 1; memory = '128 MB' } }\n"
@@ -161,6 +166,9 @@ def main():
         except AssertionError as error:
             assert 'Sample IDs in pipeline JSON not found' in str(error), error
         del settings['doublet']['sample_rates']['unselected']
+        # Variant thresholds affect only step 09 and the final metadata attachment.
+        settings['MGATK']['vmr'] = 0.02
+        expect(run('mgatk-variant-thresholds'), ['MGATK_METRICS', 'ADD_MGATK'])
         settings['copy_number']['ploidy'] = 4
         expect(run('copy-number'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         # Integration switches select actual outputs/reductions at workflow level.
@@ -176,8 +184,10 @@ def main():
         # Edits at the same shared path must invalidate the relevant file inputs.
         (root / 'WT_1' / 'ordinary' / 'sample.depthTable.txt').write_text('changed ordinary depth\n')
         changed = run('ordinary-depth-edit')
-        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
+        # Step 09 also reads the ordinary run for its coverage plot.
+        expect(changed, ['MGATK_METRICS', 'MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         assert 'MTDNA_COPY_NUMBER (WT_1)' in changed and 'MTDNA_COPY_NUMBER (WT_2)' not in changed
+        assert 'MGATK_METRICS (WT_1)' in changed and 'MGATK_METRICS (WT_2)' not in changed
         (root / 'WT_1' / 'enriched' / 'sample.A.txt.gz').write_text('changed allele counts\n')
         changed = run('enriched-count-edit')
         expect(changed, ['MGATK_METRICS', 'ADD_MGATK'])
@@ -198,7 +208,7 @@ def main():
         expect(run('shared-reference-edit'), ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
         settings['copy_number']['quantile'] = 0.9
         expect(run('unused-reference-quantile'), [])
-        # Optional ordinary mgatk changes only the sample's copy-number task.
+        # Optional ordinary mgatk changes only that sample's mgatk and copy-number tasks.
         with manifest.open() as handle:
             records = list(csv.DictReader(handle))
         for record in records:
@@ -207,7 +217,8 @@ def main():
             writer = csv.DictWriter(handle, fieldnames=list(records[0]))
             writer.writeheader(); writer.writerows(records)
         changed = run('blank-ordinary-source')
-        expect(changed, ['MTDNA_COPY_NUMBER', 'ADD_MGATK'])
+        expect(changed, ['MGATK_METRICS', 'MTDNA_COPY_NUMBER', 'ADD_MGATK'])
+        assert 'MGATK_METRICS (WT_2)' in changed and 'MGATK_METRICS (WT_1)' not in changed
         assert 'MTDNA_COPY_NUMBER (WT_2)' in changed and 'MTDNA_COPY_NUMBER (WT_1)' not in changed
         # Changed ARC reads require new peaks/common intervals and cluster review.
         (root / 'WT_1' / 'arc' / 'filtered_feature_bc_matrix.h5').write_text('changed H5 input\n')

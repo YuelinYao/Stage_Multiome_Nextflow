@@ -78,7 +78,7 @@ Package versions for the existing `stage_multiome` Conda environment are recorde
 
 #### Sample sheet (`samples.csv`)
 
-The sample CSV lists one sample per row and must contain only `stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir`; see [examples/samples.csv](examples/samples.csv). For example:
+The sample CSV lists one sample per row and must contain only `stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir`; see [examples/samples_test.csv](examples/samples_test.csv). For example:
 
 ```csv
 stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir
@@ -94,8 +94,10 @@ Use absolute paths that all execution nodes can read:
 | Column | Required content |
 | --- | --- |
 | `arc_out` | Cell Ranger ARC `outs` directory containing `filtered_feature_bc_matrix.h5`, `atac_fragments.tsv.gz` and its `.tbi` index; analysis also requires `summary.csv` for detected-cell reporting and `atac_possorted_bam.bam` for step 10; `per_barcode_metrics.csv` supplies barcode translation when present |
-| `mgatk_enriched_dir` | Required mgatk output used for step 09 and 10 heteroplasmy/depth and copy number metrics, readable by `Signac::ReadMGATK`, usually the `final` directory. |
-| `mgatk_dir` | Ordinary mgatk output used automatically by step 10 for `mtDNA_CN_normalised`; may be blank, in which case this estimate remains `NA` |
+| `mgatk_enriched_dir` | Enriched mgatk output (usually the `final` directory, readable by `Signac::ReadMGATK`): step 09 heteroplasmy/depth metrics and coverage, step 10 `mtDNA_CN_normalised_enriched`. May be blank if `mgatk_dir` is given; step 09 then uses `mgatk_dir` for heteroplasmy |
+| `mgatk_dir` | Ordinary mgatk output: step 10 `mtDNA_CN_normalised` and the second step 09 coverage layer. May be blank, in which case these remain `NA` or absent |
+
+Each row needs at least one of `mgatk_enriched_dir` and `mgatk_dir`.
 
 Gene symbols, the reference genome and barcodes are requirements for the existing data, not additional files or CSV columns:
 
@@ -161,6 +163,7 @@ Section and parameter names are case-sensitive. Unknown parameters/sections, inv
 | `RNA_processing` | `RNA_dims`, `RNA_umap_dims`, `algorithm`, `resolution`, `integrate_rna` | `07_preprocess_rna.R` |
 | `ATAC_processing` | `ATAC_dims`, `ATAC_integrate_dims`, `algorithm`, `resolution`, `integrate_atac`, `min_cutoff` | `08_preprocess_atac.R` |
 | `copy_number` | `bin_size`, `quantile`, `mapq`, `baseq`, `ploidy`, `min_nuclear_bases`, `min_mt_depth`, `keep_duplicates`, `reference_bed`, `blacklist` | `10_estimate_mtdna_copy_number.R` |
+| `MGATK` | `vmr`, `strand_correlation`, `n_cells_conf_detected` | `09_mgatk_metrics.R` |
 | `WNN` | `RNA_dims`, `ATAC_dims`, `algorithm`, `resolution`, `plot_point_size`, `lineage_assay`, `lineage_markers` | `12_wnn_stage.R` |
 
 The `algorithm` key uses Seurat’s clustering algorithm codes in every analysis section:
@@ -178,7 +181,7 @@ The configuration defaults to `3`. See [Seurat `FindClusters`](https://satijalab
 Set these in the same JSON, before the analysis sections:
 
 ```json
-"samples": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/samples.csv",
+"samples": "/suffolk/WorkGenomicsD/yy605/Stage_Multiome_Nextflow/examples/samples_test.csv",
 "stage": "E8.5",
 "outdir": "/suffolk/WorkGenomicsD/yy605/stage_results",
 "macs3_path": "/suffolk/WorkGenomicsD/yy605/conda_env/macs3/bin/macs3",
@@ -308,6 +311,16 @@ With `reference_bed: null`, each sample selects nuclear intervals from its ARC f
 
 `WNN.plot_point_size` controls cell points in both PDFs. `lineage_assay` selects normalized expression for the blended lineage plot (default `SCT`, `data` slot); `lineage_markers` contains the mouse gene symbols to display. These settings are used only by `12_wnn_stage.R`.
 
+**10\. `MGATK`: mtDNA variant discovery in 09.** Step 09 runs Signac `IdentifyVariants` on the retained cells and flags a variant as high-confidence when it is detected with confidence in at least `n_cells_conf_detected` cells, has strand concordance above `strand_correlation`, and has a variance-mean ratio above `vmr` (log10 VMR above −2 for 0.01). The same rule selects the variants shown, highlighted and labelled in the plot. Omitted settings use the defaults below.
+
+```json
+"MGATK": {
+  "vmr": 0.01,
+  "strand_correlation": 0.65,
+  "n_cells_conf_detected": 300
+}
+```
+
 Each analysis section has independent defaults matching the examples above; changing one section does not change another section’s clustering settings.
 
 ## Output files and directory structure
@@ -336,7 +349,14 @@ stage_results/
     │       ├── <sample>.qc.tsv
     │       └── <sample>_Doublet.pdf
     ├── mgatk/
-    │   └── <sample>.mtDNA.tsv
+    │   ├── <sample>.mtDNA.tsv
+    │   ├── <sample>.mtDNA_coverage.tsv
+    │   ├── <sample>.mtDNA_coverage.pdf
+    │   ├── <sample>.mtDNA_coverage_plot.rds
+    │   ├── <sample>.mtDNA_variants.tsv
+    │   ├── <sample>.mtDNA_variants_high_conf.tsv
+    │   ├── <sample>.mtDNA_variants.pdf
+    │   └── <sample>.mtDNA_variants_plot.rds
     ├── copy_number/
     │   ├── <sample>.mtDNA_copy_number.tsv
     │   ├── <sample>.nuclear_reference.bed
@@ -374,6 +394,8 @@ stage_results/
 | `qc/filtered/<sample>.qc.tsv` | One summary row per sample: initial, QC-passing, cluster-retained and singlet cell counts, plus DoubletFinder settings/results |
 | `qc/filtered/<sample>_Doublet.pdf` | RNA UMAP showing singlet/doublet classifications before doublet removal |
 | `mgatk/<sample>.mtDNA.tsv` | Per-cell mitochondrial depth, counts and individual/pooled 5019- and 5024-panel heteroplasmy for retained singlets |
+| `mgatk/<sample>.mtDNA_coverage.tsv`, `.pdf`, `_plot.rds` | Mean chrM coverage per retained cell at each position for each supplied mgatk run (table), the coverage plot, and the plot as a saved ggplot object for combining samples |
+| `mgatk/<sample>.mtDNA_variants.tsv`, `_high_conf.tsv`, `.pdf`, `_plot.rds` | All `IdentifyVariants` results with a `high_confidence` flag, the high-confidence subset, the strand-concordance/VMR plot and the plot as a saved ggplot object |
 | `copy_number/` | Step 10 per-cell estimates, selected nuclear BED and settings/provenance for each sample |
 | `objects/rna_*.rds`, `objects/atac_*.rds` | Stage Seurat objects before/after integration; WNN reads the integrated file when its integration switch is enabled, otherwise the unintegrated file |
 | `objects/rna_cell_annotations.tsv` | Per-cell sample ID, cell-cycle scores/phase and sex prediction |
@@ -597,7 +619,7 @@ Published outputs: `atac_unintegrated.rds` and optional `atac_integrated.rds`, b
 
 ### Step 09: read precomputed mgatk results per sample
 
-`09_mgatk_metrics.R` reads completed mgatk results with [Signac `ReadMGATK`](https://stuartlab.org/signac/reference/readmgatk); it does not run mitochondrial alignment, variant calling or mgatk itself. It reads the enriched directory supplied by Nextflow from the sample CSV’s `mgatk_enriched_dir`, measures the ten sites in the supplied panel and validates their expected reference alleles. It matches original retained RNA barcodes and exact base/position/strand row names, preserving cell order. Missing mgatk barcodes are retained with missing measurements.
+`09_mgatk_metrics.R` reads completed mgatk results with [Signac `ReadMGATK`](https://stuartlab.org/signac/reference/readmgatk); it does not run mitochondrial alignment, variant calling or mgatk itself. For heteroplasmy it reads the sample CSV’s `mgatk_enriched_dir`, or `mgatk_dir` when no enriched run is given, measures the ten sites in the supplied panel and validates their expected reference alleles. It matches original retained RNA barcodes and exact base/position/strand row names, preserving cell order. Missing mgatk barcodes are retained with missing measurements.
 
 | Position | Reference → alternate |
 | --- | --- |
@@ -644,6 +666,16 @@ Heteroplasmy_all_5024 = pooled mutant / (pooled mutant + pooled WT)
 ```
 
 Counts above combine both strands. The pool exports `Depth_all_5024`, `Informative_depth_all_5024`, `Allele_ref_all_5024` (pooled WT count), `Allele_mut_all_5024` (pooled mutant count) and `Heteroplasmy_all_5024_covered`, requiring at least 25 informative reads. Individual-site columns retain the reference-genome orientation: `Heteroplasmy_5024` remains T / (C + T). Both 5019 and 5024 pools are calculated for every sample; no genotype is inferred from sample names and no value is forced to zero. Interpretation assumes the stated haplotypes, rather than establishing linkage from these read summaries. Insufficient informative coverage remains `NA`.
+
+**Variant discovery.** Step 09 also runs [Signac `IdentifyVariants`](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/mito.Rmd) on the retained cells of the same mgatk run used for heteroplasmy, reporting for every possible variant its variance-mean ratio (`vmr`), strand concordance (`strand_correlation`), number of confidently detected cells (`n_cells_conf_detected`) and coverage. Variants passing the three `MGATK` thresholds are flagged `high_confidence`. It writes `<sample>.mtDNA_variants.tsv` (all variants), `<sample>.mtDNA_variants_high_conf.tsv`, a plot of strand concordance against log10 VMR for variants detected in at least `n_cells_conf_detected` cells (`<sample>.mtDNA_variants.pdf`; high-confidence variants in red and labelled, dashed lines at the thresholds) and the plot as a ggplot object (`<sample>.mtDNA_variants_plot.rds`). In the E8.5 test run, the high-confidence variants of `5019_Hi_2` were exactly 5019A>G, 15200A>G and 16232A>T, the three sites of the 5019 pool.
+
+**chrM coverage plot.** Step 09 also calculates, for every supplied mgatk run, the mean coverage per retained cell at each chrM position: the A, C, G and T counts on both strands, which equal mgatk's own `coverage` values, averaged over the sample's retained cells that mgatk found. It writes `<sample>.mtDNA_coverage.tsv` (`position`, `mean_coverage_enriched`, `mean_coverage_ordinary`, with only the columns for supplied runs), a plot `<sample>.mtDNA_coverage.pdf` (log10 scale; enriched in green, ordinary in yellow on top; means of 1 or less left blank) and the same plot as a ggplot object, `<sample>.mtDNA_coverage_plot.rds`. With one supplied run the plot shows one layer. To combine samples:
+
+```r
+library(patchwork)
+files <- list.files("Stage_results/E8.5/mgatk", "_plot.rds$", full.names = TRUE)
+wrap_plots(lapply(files, readRDS), ncol = 5) & ggplot2::xlab(NULL) & ggplot2::ylab(NULL)
+```
 
 `mtDNA_count` sums genome-wide base/strand counts without length normalization; it represents sequenced base observations, not unique reads or molecules. `mtDNA_depth` is read directly from mgatk’s depth table and represents mean coverage per mitochondrial position. For the same counted bases, `mtDNA_count` is approximately `mtDNA_depth × mitochondrial reference length`, with possible differences from depth-table rounding. See the [mgatk output definitions](https://github.com/caleblareau/mgatk/wiki/Outputs). Step 13 attaches all these columns to the final WNN object’s metadata.
 
@@ -755,6 +787,7 @@ With `-resume`, Nextflow reuses every finished task whose own inputs are unchang
 | `RNA_processing` | Step 07, then steps 12–14 |
 | `ATAC_processing` | Step 08, then steps 12–14 |
 | `copy_number` | Step 10, then step 13 |
+| `MGATK` | Step 09, then step 13 |
 | `WNN` | Step 12, then steps 13–14. Changing `WNN.RNA_dims` or `WNN.ATAC_dims` also reruns step 07 or 08 if more or fewer components are needed (a range ending at PC30 reuses RNA preprocessing that already computed 50 PCs) |
 
 These do not rerun any task: JSON formatting or key order, `note`, settings for other samples, and `cpus`, `memory` or `time` in `site.config`.
@@ -776,7 +809,7 @@ These rerun tasks besides JSON edits:
 | `site.config` | Passed with `-c`: CPUs, memory and time for each process (copy it and edit your copy) |
 | `scripts/01_*.R` … `scripts/14_*.R` | One script per step; steps 03–04 and 11–12 are described together above, and `11_combine_modalities.R` is a legacy helper not run by Nextflow |
 | `scripts/00_common.R` | Shared R helpers (data import, QC, settings reader, clustering, cell-cycle and cellXY annotation, ATAC feature assays); loaded by the other scripts, not run on its own |
-| `examples/` | Sample sheets (`samples.csv`, `samples_test.csv`) and the example pipeline JSON |
+| `examples/` | The test sample sheet (`samples_test.csv`), the example pipeline JSON and the test run's execution reports (`reports/`) |
 | `environment.yml` | Exported `stage_multiome` Conda environment; its first line lists packages installed from R |
 | `tests/` | Synthetic checks of the scripts, settings and Nextflow caching (see below) |
 
@@ -796,13 +829,13 @@ The tests use small synthetic data and stand-ins for slow or unavailable tools (
 | `doubletfinder_stage.R` | Step 06: QC, cluster removal, DoubletFinder routing, cellXY male-female doublet removal (`remove_mf_doublets` on and off) and the report |
 | `rna_integration.R` | Step 07: per-sample processing, cell-cycle scoring, SCT and CCA integration, annotation table |
 | `atac_integration.R` | Step 08: LSI, reciprocal-LSI integration, feature assays carried into both objects, motif-ID-to-TF-name renaming |
-| `mgatk_metrics.R` | Steps 09 and 13: heteroplasmy, depth and pooled metrics, attachment to the final object |
+| `mgatk_metrics.R` | Steps 09 and 13: heteroplasmy, depth and pooled metrics, chrM coverage table and plot with enriched, ordinary or both mgatk runs, variant flags, tables and plot with default and custom `MGATK` thresholds, attachment to the final object |
 | `mtdna_copy_number.R` | Step 10: reference selection, base counting, barcode translation, both mgatk sources and QC statuses |
 | `copy_number_batch.R` | Step 10: batched base counter matches the original implementation (`--benchmark` for timing) |
 | `wnn_settings.R` | Step 12: WNN settings, reduction choice and copying of step 08 assays |
 | `modalities_markers.R` | Step 14 markers (combined and per-cluster files) and the legacy step 11 helper |
 | `regression.R` | Shared helpers: independent section settings, peak counting across Signac versions, mgatk extraction |
-| `process_settings.R` | R settings reader on the task JSONs, including defaults and invalid values |
+| `process_settings.R` | R settings reader on the task JSONs (including `MGATK`), defaults and invalid values |
 | `pipeline_settings.groovy` | Groovy settings validation, defaults and per-task settings |
 | `settings_cache.py` | Real Nextflow on mock data: which tasks rerun after each kind of edit, sample-ID checks, step overlap; also validates every generated task JSON with the R reader |
 | `script_hash.py` | Real Nextflow: editing an R script reruns tasks |
@@ -881,7 +914,7 @@ Each step was checked against the official tutorial source for the package versi
 | 05–06 DoubletFinder | [DoubletFinder README](https://github.com/chris-mcginnis-ucsf/DoubletFinder) | Follows | `paramSweep(sct = FALSE)` → `summarizeSweep` → `find.pK` → `modelHomotypic` → homotypic-adjusted `nExp` → `doubletFinder`. Meets both README best practices: run per sample, never on pooled distinct samples, and remove low-quality clusters first (phase 2). The expected rate comes from the 10x Multiome table instead of the example’s fixed 7.5% |
 | 07 RNA | Seurat [SCTransform v2](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/sctransform_v2_vignette.Rmd), [v5 integration](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/seurat5_integration.Rmd), [Cell cycle](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/cell_cycle_vignette.Rmd) | Follows | SCT v2 with glmGamPoi, `IntegrateLayers(CCAIntegration, normalization.method = "SCT")`, `PrepSCTFindMarkers`, `CellCycleScoring` after `NormalizeData`. SCT is run per sample and the objects merged, instead of splitting layers of one object; both fit one SCT model per sample. The explicit `PrepSCTIntegration` is redundant (`IntegrateLayers` repeats it) but harmless |
 | 08 ATAC | Signac [scATAC-seq integration](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/integrate_atac.Rmd), [Motif analysis](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/motif_vignette.Rmd), [Gene activity](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_vignette.Rmd) | Follows | Per-sample and merged `FindTopFeatures`/`RunTFIDF`/`RunSVD`, `FindIntegrationAnchors(reduction = "rlsi")`, `IntegrateEmbeddings` keeping component 1 and excluding it downstream. Configurable values differ: dims `2:40`/`1:40` (tutorial `2:30`/`1:30`), `min_cutoff` `q5` (tutorial `10`). Motif, chromVAR and gene-activity calls match the tutorials |
-| 09 Heteroplasmy | Signac [Mitochondrial genotyping](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/mito.Rmd) | Deliberately different | `ReadMGATK` as in the tutorial. Signac’s `AlleleFreq()` divides alternate reads by all reads at the site; this pipeline divides by reference + alternate reads, so other-base errors do not lower the fraction. Known sites are scored directly instead of being discovered with `IdentifyVariants` |
+| 09 mgatk metrics | Signac [Mitochondrial genotyping](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/mito.Rmd) | Follows, with deliberate differences | `ReadMGATK` and `IdentifyVariants(..., refallele = ...)` as in the tutorial, on the retained cells of the enriched run (or the ordinary run if no enriched run is given). The high-confidence filter has the tutorial's form (`n_cells_conf_detected`, `strand_correlation`, `vmr`), but its defaults come from the `MGATK` settings: at least 300 confident cells instead of the tutorial's 5, strand concordance above 0.65 (tutorial: at least 0.65) and VMR above 0.01. Heteroplasmy at the panel sites is deliberately different: Signac's `AlleleFreq()` divides alternate reads by all reads at the site, while this pipeline divides by reference + alternate reads, so other-base errors do not lower the fraction (the YY_06 definition, which reproduces earlier results exactly). The chrM coverage plot is not part of the tutorial; its coverage equals mgatk's own `coverage` values |
 | 10 Copy number | No official tutorial | Custom | Based on the [MitoEJ copy-number notebook](https://github.com/dpeerlab/MitoEJ-paper-analysis/blob/main/notebooks/CopyNumberEstimation/CopyNumberEstimation.ipynb); see Step 10 |
 | 11–12 WNN | Seurat [WNN](https://github.com/satijalab/seurat/blob/v5.3.0/vignettes/weighted_nearest_neighbor_analysis.Rmd), Signac [10x multiome](https://github.com/stuart-lab/signac/blob/1.14.0/vignettes/pbmc_multiomic.Rmd) | Follows | `FindMultiModalNeighbors`, UMAP on `weighted.nn`, `FindClusters(graph.name = "wsnn", algorithm = 3)`. Dims `1:20`/`2:40` are configurable (tutorials use `1:50` with `2:50` or `2:40`) |
 | 13 Metadata | None | Pipeline bookkeeping | Attaches step 09 and 10 tables by cell |
@@ -909,11 +942,11 @@ Run Cell Ranger ARC and mgatk on a matching human reference (mgatk with chromoso
 | `scripts/10_estimate_mtdna_copy_number.R` | Autosomes used for the nuclear reference, and the default blacklist | chr1–chr19 → chr1–chr22: in `select_reference()` and the reference-BED check, extend the chromosome pattern `^chr(...)$` to also accept 20–22; `blacklist_mm10` → `blacklist_hg38_unified`, or set `copy_number.blacklist` to a hg38 BED |
 | Pipeline JSON | Plot markers and QC thresholds | `WNN.lineage_markers` → human symbols (e.g. upper-case genes); review all QC thresholds for the new data |
 
-Also check the doublet rate: `nextgem_multiome_doublet_rate()` depends on the 10x chemistry, not the species, so it stays valid for Next GEM Multiome data. Update the tests in `tests/` that use mouse gene names or chromosomes.
+Also check the doublet rate: `nextgem_multiome_doublet_rate()` depends on the 10x chemistry, not the species, so it stays valid for Next GEM Multiome data. Step 09's chrM coverage plot and variant discovery need no change: chrM positions come from mgatk's reference-allele file (16,569 for human), and `IdentifyVariants` is species-independent. Review the `MGATK` thresholds for the new data, since sample size and coverage affect `n_cells_conf_detected`. Update the tests in `tests/` that use mouse gene names or chromosomes.
 
 ### Other mtDNA variants
 
-Variant positions and pooling live in `scripts/09_mgatk_metrics.R`:
+Variant positions and pooling live in `scripts/09_mgatk_metrics.R`. Variant discovery itself (`IdentifyVariants`, controlled by the `MGATK` settings) needs no change and is a good starting point: `<sample>.mtDNA_variants_high_conf.tsv` lists the variants that vary reliably between cells in each sample, for example to find sites that tag a new haplotype. Then:
 
 1.  **Add or change sites** in the `variants` table (`pos`, `ref`, `alt`). The script checks every reference allele against mgatk’s `chrM_refAllele.txt` and stops if one differs, so a wrong position or reference is caught. Each site automatically gets `Depth_`, `Allele_ref_`, `Allele_mut_`, base/strand counts and `Heteroplasmy_<pos>` (plus `_covered`, `_fwd`, `_rev`) columns.
 2.  **Pools (optional).** To pool sites that tag the same haplotype, add an `add_pool()` call, e.g. `add_pool("all_1234", c(1234L, 5678L))`. List under `reciprocal` any site where the *reference* allele marks the mutant haplotype (as for five sites in the 5024 pool). Remove the 5019/5024 pools if they do not apply.

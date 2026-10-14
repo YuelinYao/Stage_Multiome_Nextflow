@@ -1,4 +1,4 @@
 stage,sample_id,arc_out,mgatk_enriched_dir,mgatk_dir
 E8.5,5019_Hi_2,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/cell_ranger/5019_Hi_2_enriched/outs,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/mgatk/5019_Hi_2_enriched/final,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/mgatk/5019_Hi_2/final
-E8.5,WT_1,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/cell_ranger/WT_1/outs,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/mgatk/WT_1/final,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/mgatk/WT_1/final
+E8.5,WT_1,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/cell_ranger/WT_1/outs,,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/mgatk/WT_1/final
 E8.5,5024_Hi_2,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/cell_ranger/5024_Hi_2_enriched/outs,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/mgatk/5024_Hi_2_enriched/final,/suffolk/DataGenomicsF/spb54/007_PFC_SB_E85_MultiOme/mgatk/5024_Hi_2/final

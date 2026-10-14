@@ -41,13 +41,58 @@ run_checks <- function() {
   input <- file.path(task_dir, 'cells.rds'); output <- file.path(task_dir, 'metrics.tsv')
   saveRDS(obj, input)
   env$ReadMGATK <- function(dir) mgatk
+  # IdentifyVariants stand-in: Signac needs counts for every chrM position, which
+  # this small fixture lacks. Variant 1 passes all default thresholds; 2-4 each fail one.
+  env$identify_mtdna_variants <- function(counts, refallele) {
+    stopifnot(ncol(counts) == 3)   # only mgatk-matched retained cells
+    data.frame(position = c(5019L, 100L, 200L, 300L), nucleotide = c('A>G', 'C>T', 'G>A', 'T>C'),
+      variant = c('5019A>G', '100C>T', '200G>A', '300T>C'), vmr = c(0.05, 0.05, 0.05, 0.001),
+      mean = 0.1, variance = 0.01, n_cells_conf_detected = c(400, 100, 400, 400),
+      n_cells_over_5 = 1, n_cells_over_10 = 1, n_cells_over_20 = 1,
+      strand_correlation = c(0.9, 0.9, 0.5, 0.9), mean_coverage = 20)
+  }
   expressions <- parse('scripts/09_mgatk_metrics.R')[-(1:2)]
-  run <- function() {
-    env$args <- c('001', input, 'mock', output)
+  run <- function(enriched = 'mock', ordinary = 'none', settings = NULL) {
+    env$args <- c('001', input, enriched, ordinary, output, settings)
     for (expr in expressions) eval(expr, env)
     read.delim(output, colClasses = c(cell_id = "character", sample_id = "character", barcode = "character"))
   }
   tab <- run()
+  # Coverage: mean over the 3 mgatk-matched retained cells of all 8 base/strand counts.
+  coverage_file <- file.path(task_dir, '001.mtDNA_coverage.tsv')
+  coverage <- read.delim(coverage_file)
+  dense <- as.matrix(mgatk$counts)[, c('covered', 'other_only', 'low')]
+  site <- as.integer(sub('^[ACGT]-([0-9]+)-.*$', '\\1', rownames(dense)))
+  expected <- rowsum(rowSums(dense), site)[, 1] / 3
+  stopifnot(identical(names(coverage), c('position', 'mean_coverage_enriched')),
+            identical(coverage$position, as.integer(sort(positions))),
+            isTRUE(all.equal(coverage$mean_coverage_enriched, unname(expected[as.character(coverage$position)]))),
+            file.info(file.path(task_dir, '001.mtDNA_coverage.pdf'))$size > 0,
+            inherits(readRDS(file.path(task_dir, '001.mtDNA_coverage_plot.rds')), 'ggplot'))
+  # Ordinary-only input: heteroplasmy from the ordinary run, one coverage layer.
+  ordinary_only <- run(enriched = 'none', ordinary = 'mock')
+  stopifnot(identical(ordinary_only, tab),
+            identical(names(read.delim(coverage_file)), c('position', 'mean_coverage_ordinary')))
+  # Both runs: two coverage columns (the mock returns the same counts for both).
+  both <- run(enriched = 'mock', ordinary = 'mock_ordinary')
+  coverage <- read.delim(coverage_file)
+  stopifnot(identical(both, tab), identical(coverage$mean_coverage_enriched, coverage$mean_coverage_ordinary))
+  expect_error(run(enriched = 'none', ordinary = 'none'))
+  # Variant outputs with default MGATK thresholds (n >= 300, strand > 0.65, vmr > 0.01).
+  variant_file <- file.path(task_dir, '001.mtDNA_variants.tsv')
+  run()
+  found <- read.delim(variant_file)
+  stopifnot(nrow(found) == 4, identical(found$high_confidence, c(TRUE, FALSE, FALSE, FALSE)),
+            identical(read.delim(file.path(task_dir, '001.mtDNA_variants_high_conf.tsv'))$variant, '5019A>G'),
+            file.info(file.path(task_dir, '001.mtDNA_variants.pdf'))$size > 0)
+  plot <- readRDS(file.path(task_dir, '001.mtDNA_variants_plot.rds'))
+  stopifnot(inherits(plot, 'ggplot'), nrow(plot$data) == 3)   # variants with n >= 300
+  # A settings file changes the thresholds: n >= 50 also passes variant 2.
+  settings_file <- file.path(task_dir, 'mgatk_settings.json')
+  jsonlite::write_json(list(process = 'MGATK', MGATK = list(vmr = 0.01, strand_correlation = 0.65,
+                       n_cells_conf_detected = 50)), settings_file, auto_unbox = TRUE)
+  run(settings = settings_file)
+  stopifnot(identical(read.delim(variant_file)$high_confidence, c(TRUE, TRUE, FALSE, FALSE)))
   stopifnot(identical(tab$sample_id, rep("001", nrow(tab))))
   yy06_names <- c('mtDNA_depth', 'mtDNA_count',
     paste0('Heteroplasmy_', positions), paste0('Depth_', positions),
@@ -106,7 +151,7 @@ run_checks <- function() {
     mgatk$counts[paste(base, pos, 'fwd', sep = '-'), 'covered'] <- 10
   }
   for (label in c('5019_example', '5024_example', 'WT_example')) {
-    env$args <- c(label, input, 'mock', output)
+    env$args <- c(label, input, 'mock', 'none', output)
     for (expr in expressions) eval(expr, env)
     result <- read.delim(output)
     stopifnot(result$Heteroplasmy_all_5024[1] == 0,
