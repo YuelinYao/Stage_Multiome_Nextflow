@@ -20,14 +20,14 @@ This Nextflow workflow analyses mouse single-cell multiome data (RNA + ATAC, mm1
 - [Details for each step](#details-for-each-step)
 - [Resuming after JSON edits](#resuming-after-json-edits)
 - [Running several stages](#running-several-stages)
+- [Run time and CPU use](#run-time-and-cpu-use)
+  - [CPU use by step](#cpu-use-by-step)
+  - [Estimated run time](#estimated-run-time)
 - [Troubleshooting](#troubleshooting)
 - [Workflow files and execution](#workflow-files-and-execution)
   - [Repository layout](#repository-layout)
   - [How settings reach each task](#how-settings-reach-each-task)
   - [Tests](#tests)
-- [Run time and CPU use](#run-time-and-cpu-use)
-  - [CPU use by step](#cpu-use-by-step)
-  - [Estimated run time](#estimated-run-time)
 - [Comparison with official tutorials](#comparison-with-official-tutorials)
 - [Adapting the pipeline to other species or mtDNA variants](#adapting-the-pipeline-to-other-species-or-mtdna-variants)
   - [Human data (GRCh38/hg38)](#human-data-grch38hg38)
@@ -850,6 +850,50 @@ Stage_Multiome_runs/
 - Size `site.config` per stage: memory for `MERGE_INTEGRATE_ATAC` (step 08) and `MGATK_METRICS` (step 09) grows with the number of cells (see [Estimated run time](#estimated-run-time)).
 - A short README in each stage folder recording which phase is done and why stage-specific settings were chosen makes the runs easy to pick up later.
 
+## Run time and CPU use
+
+### CPU use by step
+
+`cpus` for each process is set in [site.config](site.config). Several steps are single-threaded, so extra CPUs there stay idle and only make Slurm jobs wait longer to start. Steps that run PCA/SVD or integration use a multithreaded maths library (OpenBLAS), so they gain modestly from more CPUs. Seurat runs UMAP on one thread because the workflow sets no `future` plan.
+
+| Step | Process | `cpus` in site.config | Uses more than one CPU? |
+| --- | --- | --- | --- |
+| 01 | `PEAK_SAMPLE` | 1 | No: MACS3 and R are single-threaded |
+| 02 | `COMMON_PEAKS` | 1 | No |
+| 03 | `QC_METRICS` | 1 | No: Signac counting runs sequentially (no `future` plan is set) |
+| 04 | `QC_REVIEW` | 1 | No |
+| 05 | `PRE_DOUBLET_REVIEW` | 4 | A little: PCA |
+| 06 | `QC_FILTER_DOUBLET` | 4 | Some: PCA; UMAP and the DoubletFinder pK sweep use one core |
+| 07 | `MERGE_INTEGRATE_RNA` | 8 | Some: PCA and CCA integration |
+| 08 | `MERGE_INTEGRATE_ATAC` | 8 | Yes: chromVAR uses all its CPUs; SVD/LSI uses multithreaded maths |
+| 09 | `MGATK_METRICS` | 1 | No |
+| 10 | `MTDNA_COPY_NUMBER` | 1 | No: the BAM scan is single-threaded |
+| 11–12 | `WNN_STAGE` | 2 | Little: WNN neighbours and UMAP run on one core |
+| 13 | `ADD_MGATK` | 1 | No |
+| 14 | `DEG_STAGE` | 1 | No: marker tests run sequentially (no `future` plan is set) |
+
+[nextflow.config](nextflow.config) sets `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `RCPP_PARALLEL_NUM_THREADS` to each task’s `cpus` before it starts, so multithreaded maths uses exactly the CPUs allocated in `site.config` rather than every core on the node.
+
+### Estimated run time
+
+Run time depends mainly on library size. Per-sample steps run as separate Slurm jobs in parallel, so with enough cluster capacity a stage takes about as long as its slowest sample.
+
+Step 10 (mtDNA copy number) is usually the longest per-sample step: it reads the whole ATAC BAM once on one CPU. Example timings, measured on chunks of the largest E8.5 sample (`E8.5_5019_Hi_3`, ARC run `E8_5_Hi_1`, 79 GB BAM, 1.66 billion mapped alignments, 382 million fragments):
+
+| Step 10 stage | Measured speed | Estimated time for this sample |
+| --- | --- | --- |
+| Select accessible nuclear regions from fragments | 0.39 s per 100,000 fragments | ~25 min |
+| Count nuclear bases in the BAM | 0.95 s per 100,000 filtered alignments | ~1.5–3 h |
+| **Total** |  | **~2–3.5 h** |
+
+Smaller libraries scale roughly with BAM size; the 007 E8.5 BAMs (21–47 GB) take about 1–2 h each. Reading from shared storage can be slower. Step 10 starts as soon as its sample finishes step 06 and runs alongside steps 07–09. The time limits in [site.config](site.config) are generous starting values, not measured run times.
+
+Step 08 (ATAC) also runs motif matching, chromVAR and gene activity. On 300 cells of `5024_Hi_2` these took about 12 min with 4 CPUs; motif matching is a fixed cost for all peaks, while chromVAR and gene activity grow with the number of cells, so expect this step to take a few hours for a whole stage.
+
+Measured times and memory for the vignette's three test samples (E8.5: `5019_Hi_2`, `5024_Hi_2`, `WT_1`) are in [examples/reports/](examples/reports/): an execution report, timeline and trace for each phase. In that run, step 10 took 49–59 min per sample (1.7 GB); step 08 took 56 min with a peak of 88 GB, close to its 96 GB limit; and step 09 took 4–8 min with a peak of 19 GB, close to its 24 GB limit, because it reads both mgatk runs and runs `IdentifyVariants`. For stages with more or larger samples, increase memory for `MERGE_INTEGRATE_ATAC` and `MGATK_METRICS` in `site.config`.
+
+For actual times of every task in your own runs, open `<outdir>/<stage>/reports/execution_report_<phase>.html`, or read the `realtime`, `peak_rss` and `%cpu` columns of `reports/execution_trace_<phase>.txt`. Use these to tune `time`, `memory` and `cpus` in `site.config` for later stages.
+
 ## Troubleshooting
 
 | Problem | Cause and fix |
@@ -908,50 +952,6 @@ NXF_VER=25.10.8 python3 tests/script_hash.py --nextflow "$(which nextflow)"
 ```
 
 Run the tests after changing any script or setting rule; a failing test usually means a test needs updating to the new behaviour, which should then be done in the same change.
-
-## Run time and CPU use
-
-### CPU use by step
-
-`cpus` for each process is set in [site.config](site.config). Several steps are single-threaded, so extra CPUs there stay idle and only make Slurm jobs wait longer to start. Steps that run PCA/SVD or integration use a multithreaded maths library (OpenBLAS), so they gain modestly from more CPUs. Seurat runs UMAP on one thread because the workflow sets no `future` plan.
-
-| Step | Process | `cpus` in site.config | Uses more than one CPU? |
-| --- | --- | --- | --- |
-| 01 | `PEAK_SAMPLE` | 1 | No: MACS3 and R are single-threaded |
-| 02 | `COMMON_PEAKS` | 1 | No |
-| 03 | `QC_METRICS` | 1 | No: Signac counting runs sequentially (no `future` plan is set) |
-| 04 | `QC_REVIEW` | 1 | No |
-| 05 | `PRE_DOUBLET_REVIEW` | 4 | A little: PCA |
-| 06 | `QC_FILTER_DOUBLET` | 4 | Some: PCA; UMAP and the DoubletFinder pK sweep use one core |
-| 07 | `MERGE_INTEGRATE_RNA` | 8 | Some: PCA and CCA integration |
-| 08 | `MERGE_INTEGRATE_ATAC` | 8 | Yes: chromVAR uses all its CPUs; SVD/LSI uses multithreaded maths |
-| 09 | `MGATK_METRICS` | 1 | No |
-| 10 | `MTDNA_COPY_NUMBER` | 1 | No: the BAM scan is single-threaded |
-| 11–12 | `WNN_STAGE` | 2 | Little: WNN neighbours and UMAP run on one core |
-| 13 | `ADD_MGATK` | 1 | No |
-| 14 | `DEG_STAGE` | 1 | No: marker tests run sequentially (no `future` plan is set) |
-
-[nextflow.config](nextflow.config) sets `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `RCPP_PARALLEL_NUM_THREADS` to each task’s `cpus` before it starts, so multithreaded maths uses exactly the CPUs allocated in `site.config` rather than every core on the node.
-
-### Estimated run time
-
-Run time depends mainly on library size. Per-sample steps run as separate Slurm jobs in parallel, so with enough cluster capacity a stage takes about as long as its slowest sample.
-
-Step 10 (mtDNA copy number) is usually the longest per-sample step: it reads the whole ATAC BAM once on one CPU. Example timings, measured on chunks of the largest E8.5 sample (`E8.5_5019_Hi_3`, ARC run `E8_5_Hi_1`, 79 GB BAM, 1.66 billion mapped alignments, 382 million fragments):
-
-| Step 10 stage | Measured speed | Estimated time for this sample |
-| --- | --- | --- |
-| Select accessible nuclear regions from fragments | 0.39 s per 100,000 fragments | ~25 min |
-| Count nuclear bases in the BAM | 0.95 s per 100,000 filtered alignments | ~1.5–3 h |
-| **Total** |  | **~2–3.5 h** |
-
-Smaller libraries scale roughly with BAM size; the 007 E8.5 BAMs (21–47 GB) take about 1–2 h each. Reading from shared storage can be slower. Step 10 starts as soon as its sample finishes step 06 and runs alongside steps 07–09. The time limits in [site.config](site.config) are generous starting values, not measured run times.
-
-Step 08 (ATAC) also runs motif matching, chromVAR and gene activity. On 300 cells of `5024_Hi_2` these took about 12 min with 4 CPUs; motif matching is a fixed cost for all peaks, while chromVAR and gene activity grow with the number of cells, so expect this step to take a few hours for a whole stage.
-
-Measured times and memory for the vignette's three test samples (E8.5: `5019_Hi_2`, `5024_Hi_2`, `WT_1`) are in [examples/reports/](examples/reports/): an execution report, timeline and trace for each phase. In that run, step 10 took 49–59 min per sample (1.7 GB); step 08 took 56 min with a peak of 88 GB, close to its 96 GB limit; and step 09 took 4–8 min with a peak of 19 GB, close to its 24 GB limit, because it reads both mgatk runs and runs `IdentifyVariants`. For stages with more or larger samples, increase memory for `MERGE_INTEGRATE_ATAC` and `MGATK_METRICS` in `site.config`.
-
-For actual times of every task in your own runs, open `<outdir>/<stage>/reports/execution_report_<phase>.html`, or read the `realtime`, `peak_rss` and `%cpu` columns of `reports/execution_trace_<phase>.txt`. Use these to tune `time`, `memory` and `cpus` in `site.config` for later stages.
 
 ## Comparison with official tutorials
 
